@@ -1,5 +1,6 @@
 # Compiler and flags
 CC = clang
+# -g for debug
 CFLAGS = -I./include -I./include/util -Wall -g
 
 # Source and target directories

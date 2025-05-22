@@ -5,10 +5,10 @@
 #include <unistd.h>
 
 #define __FACILEDB_TEST__
-#define __PRINT_DETAILS__
+// #define __PRINT_DETAILS__
 #define DB_SET_INFO_INSTANCE_NUM (1)
 // #define DB_BLOCK_DATA_SIZE ((16 + 6 + 6) * 2 - 4) // 52
-#define DB_BLOCK_DATA_SIZE  (50) // 49 ~ 
+#define DB_BLOCK_DATA_SIZE (50) // 49 ~
 
 #include "faciledb.c"
 
@@ -114,6 +114,25 @@ void check_faciledb_records(DB_RECORD_INFO_T *p_db_record_info_1, uint32_t db_re
     }
 }
 
+void check_faciledb_search_result(FACILEDB_DATA_T *p_faciledb_data_array_1, uint32_t data_array_1_length, FACILEDB_DATA_T *p_faciledb_data_array_2, uint32_t data_array_2_length)
+{
+    assert(data_array_1_length == data_array_2_length);
+
+    for(uint32_t i = 0; i < data_array_1_length; i++)
+    {
+        assert(p_faciledb_data_array_1[i].data_num == p_faciledb_data_array_2[i].data_num);
+        
+        for(uint32_t j = 0; j < p_faciledb_data_array_1[i].data_num; j++)
+        {
+            assert(p_faciledb_data_array_1[i].p_data_records[j].key_size == p_faciledb_data_array_2[i].p_data_records[j].key_size);
+            assert(p_faciledb_data_array_1[i].p_data_records[j].value_size == p_faciledb_data_array_2[i].p_data_records[j].value_size);
+            assert(p_faciledb_data_array_1[i].p_data_records[j].record_value_type == p_faciledb_data_array_2[i].p_data_records[j].record_value_type);
+            assert(memcmp(p_faciledb_data_array_1[i].p_data_records[j].p_key, p_faciledb_data_array_2[i].p_data_records[j].p_key, p_faciledb_data_array_1[i].p_data_records[j].key_size) == 0);
+            assert(memcmp(p_faciledb_data_array_1[i].p_data_records[j].p_value, p_faciledb_data_array_2[i].p_data_records[j].p_value, p_faciledb_data_array_1[i].p_data_records[j].value_size) == 0);
+        }
+    }
+}
+
 /////////////////////////
 
 char test_db_directory[] = "./bin/test_db_files/";
@@ -213,7 +232,7 @@ void test_faciledb_insert_case1()
     // check the db records
     // clang-format off
     uint32_t record_num = 0;
-    DB_RECORD_INFO_T *p_db_records_info = extract_db_records_from_db_blocks(1, p_db_set_info, &record_num);
+    DB_RECORD_INFO_T *p_db_records_info = extract_db_record_info_from_db_blocks(1, p_db_set_info, &record_num);
     DB_RECORD_INFO_T expected_db_record = {
         .db_record = (DB_RECORD_T){
             .p_key = data.p_data_records->p_key,
@@ -306,7 +325,7 @@ void test_faciledb_insert_case2()
     // check the db records
     // clang-format off
     uint32_t record_num = 0;
-    DB_RECORD_INFO_T *p_db_records_info = extract_db_records_from_db_blocks(1, p_db_set_info, &record_num);
+    DB_RECORD_INFO_T *p_db_records_info = extract_db_record_info_from_db_blocks(1, p_db_set_info, &record_num);
     DB_RECORD_INFO_T expected_db_record = {
         .db_record = (DB_RECORD_T){
             .p_key = data.p_data_records->p_key,
@@ -482,7 +501,7 @@ void test_faciledb_insert_case4()
         // check the db records
         uint32_t record_num = 0;
         uint32_t expected_record_num = (i == 0) ? (1) : (2); // 1 record in block1 and 2 records in block2.
-        DB_RECORD_INFO_T *p_db_records_info = extract_db_records_from_db_blocks(expected_db_blocks[i].block_tag, p_db_set_info, &record_num);
+        DB_RECORD_INFO_T *p_db_records_info = extract_db_record_info_from_db_blocks(expected_db_blocks[i].block_tag, p_db_set_info, &record_num);
 
         check_faciledb_records(p_db_records_info, record_num, &(expected_db_records[i]), expected_record_num);
 
@@ -579,7 +598,7 @@ void test_faciledb_insert_case3()
     // check the db records
     // clang-format off
     uint32_t record_num = 0;
-    DB_RECORD_INFO_T *p_db_records_info = extract_db_records_from_db_blocks(1, p_db_set_info, &record_num);
+    DB_RECORD_INFO_T *p_db_records_info = extract_db_record_info_from_db_blocks(1, p_db_set_info, &record_num);
     DB_RECORD_INFO_T expected_db_record = {
         .db_record = (DB_RECORD_T){
             .p_key = data.p_data_records->p_key,
@@ -772,7 +791,7 @@ void test_faciledb_insert_case5()
         // Record [0]
         record_num = 0;
         expected_record_num = 1; // 1 record in block_tag: 1.
-        p_db_records_info = extract_db_records_from_db_blocks(expected_db_blocks[0].block_tag, p_db_set_info, &record_num);
+        p_db_records_info = extract_db_record_info_from_db_blocks(expected_db_blocks[0].block_tag, p_db_set_info, &record_num);
 
         check_faciledb_records(p_db_records_info, record_num, &(expected_db_records[0]), expected_record_num);
 
@@ -784,7 +803,7 @@ void test_faciledb_insert_case5()
         // Record [1] and [2]
         record_num = 0;
         expected_record_num = 2; // 2 records in block_tag: 3.
-        p_db_records_info = extract_db_records_from_db_blocks(expected_db_blocks[2].block_tag, p_db_set_info, &record_num);
+        p_db_records_info = extract_db_record_info_from_db_blocks(expected_db_blocks[2].block_tag, p_db_set_info, &record_num);
 
         check_faciledb_records(p_db_records_info, record_num, &(expected_db_records[1]), expected_record_num);
 
@@ -799,16 +818,119 @@ void test_faciledb_insert_case5()
     test_end(case_name);
 }
 
+void test_faciledb_search_case1()
+{
+    char case_name[] = "test_faciledb_search_case1";
+    test_start(case_name);
+
+    char db_set_name[] = "test_db_search_case1";
+    // clang-format off
+    FACILEDB_DATA_T data = {
+        .data_num = 1,
+        .p_data_records = (FACILEDB_RECORD_T[]){
+            {
+                .key_size = 2, // 'a' and '\0'
+                .p_key = (void *)"a",
+                .value_size = sizeof(uint32_t),
+                .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                .p_value = (void *)&(uint32_t){1}
+            }
+        }
+    };
+    FACILEDB_RECORD_T search_record[3] = {
+        // match: 1
+        {
+            .key_size = 2,
+            .p_key = (void *)"a",
+            .value_size = sizeof(uint32_t),
+            .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+            .p_value = (void *)&(uint32_t){1}
+        },
+        // match: 0
+        {
+            .key_size = 2,
+            .p_key = (void *)"a",
+            .value_size = sizeof(uint32_t),
+            .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+            .p_value = (void *)&(uint32_t){2}
+        },
+        // match: 0
+        {
+            .key_size = 2,
+            .p_key = (void *)"b",
+            .value_size = sizeof(uint32_t),
+            .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+            .p_value = (void *)&(uint32_t){1}
+        }
+    };
+    // clang-format on
+    uint32_t data_num[3] = {0};
+    FACILEDB_DATA_T *p_faciledb_data_array[3];
+
+    FacileDB_Api_Init(test_db_directory);
+    // insert 1 data
+    FacileDB_Api_Insert_Element(db_set_name, &data);
+    // search
+    p_faciledb_data_array[0] = FacileDB_Api_Search_Equal(db_set_name, &(search_record[0]), &(data_num[0]));
+    p_faciledb_data_array[1] = FacileDB_Api_Search_Equal(db_set_name, &(search_record[1]), &(data_num[1]));
+    p_faciledb_data_array[2] = FacileDB_Api_Search_Equal(db_set_name, &(search_record[2]), &(data_num[2]));
+
+    FacileDB_Api_Close();
+
+    // Check
+    // clang-format off
+    FACILEDB_DATA_T expected_data_result[3] = {
+        {
+            .data_num = 1,
+            .p_data_records = (FACILEDB_RECORD_T *)&(
+                (FACILEDB_RECORD_T){
+                    .key_size = 2,
+                    .p_key = (void *)"a",
+                    .value_size = sizeof(uint32_t),
+                    .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                    .p_value = (void *)&(uint32_t){1}
+                }
+            )
+        },
+        {
+            .data_num = 0,
+            .p_data_records = NULL
+        },
+        {
+            .data_num = 0,
+            .p_data_records = NULL
+        }
+    };
+    // clang-format on
+    uint32_t expected_data_result_length[3] = {1, 0, 0};
+
+    for(uint32_t i = 0; i < 3; i++)
+    {
+        check_faciledb_search_result(p_faciledb_data_array[i], data_num[i], &(expected_data_result[i]), expected_data_result_length[i]);
+    }
+
+    // End
+    for (uint32_t i = 0; i < 3; i++)
+    {
+        for (uint32_t j = 0; j < data_num[i]; j++)
+        {
+            FacileDB_Api_Free_Data_Buffer(&(p_faciledb_data_array[i][j]));
+        }
+        free(p_faciledb_data_array[i]);
+    }
+
+    test_end(case_name);
+}
+
 int main()
 {
-    printf("%ld\n", sizeof(DB_BLOCK_T));
-
     test_faciledb_init();
     test_faciledb_close();
     test_faciledb_insert_case1();
     test_faciledb_insert_case2();
     test_faciledb_insert_case3();
     test_faciledb_insert_case4();
-
     test_faciledb_insert_case5();
+
+    test_faciledb_search_case1();
 }

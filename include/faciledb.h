@@ -48,71 +48,16 @@ typedef struct
 // user input format
 typedef struct
 {
-    uint32_t data_num;           // array length
+    uint32_t data_num;           // TODO: rename to record_num
     FACILEDB_RECORD_T *p_data_records; // array of DB_RECORD_T structure.
 } FACILEDB_DATA_T;
-
-typedef struct
-{
-    uint32_t deleted;
-    uint32_t key_size;
-    uint32_t value_size;
-    union
-    {
-        FACILEDB_RECORD_VALUE_TYPE_E record_value_type;
-        uint32_t record_value_type_32;
-    };
-} DB_RECORD_PROPERTIES_T;
-
-// Record: A key-value pair
-typedef struct
-{
-    void *p_key;
-    void *p_value;
-} DB_RECORD_T;
-
-// in-memory
-typedef struct
-{
-    DB_RECORD_PROPERTIES_T db_record_properties;
-    DB_RECORD_T db_record;
-    off_t db_record_properties_offset; // The offset value from the block data starting address to the record properties address.
-} DB_RECORD_INFO_T;
-
-typedef struct
-{
-    uint64_t block_tag; // 1-based number, block_tag = 0 means null
-    uint64_t data_tag; // 1-based number
-    uint64_t prev_block_tag;
-    uint64_t next_block_tag;
-    uint64_t created_time;
-    uint64_t modified_time;
-    uint32_t deleted;
-    uint32_t valid_record_num;
-    uint32_t record_properties_num; // numbers of record in the data block
-
-    uint8_t block_data[DB_BLOCK_DATA_SIZE / sizeof(uint8_t)]; // contains lots of db records.
-} DB_BLOCK_T;
-
-typedef struct
-{
-    uint64_t block_num;
-    uint64_t created_time;
-    uint64_t modified_time;
-    uint64_t valid_record_num;
-    uint32_t set_name_size;
-    void *p_set_name;
-} DB_SET_PROPERTIES_T;
-
-typedef struct
-{
-    FILE *file;
-    DB_SET_PROPERTIES_T db_set_properties;
-} DB_SET_INFO_T;
 
 void FacileDB_Api_Init(char *p_db_directory_path);
 void FacileDB_Api_Close();
 bool FacileDB_Api_Check_Set_Exist(char *p_db_set_name);
 uint32_t FacileDB_Api_Insert_Element(char *p_db_set_name, FACILEDB_DATA_T *p_faciledb_data);
+FACILEDB_DATA_T *FacileDB_Api_Search_Equal(char *p_db_set_name, FACILEDB_RECORD_T *p_faciledb_record, uint32_t *p_faciledb_data_num);
 
+void FacileDB_Api_Free_Data_Buffer(FACILEDB_DATA_T *p_faciledb_data);
+void FacileDB_Api_Free_Record_Buffer(FACILEDB_RECORD_T *p_facilledb_record);
 #endif // __FACILEDB_H__

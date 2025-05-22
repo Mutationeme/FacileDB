@@ -1,5 +1,7 @@
 bin
-
 .DS_Store
-.vscode
 *.sh
+
+.vscode/*
+!.vscode/launch.json
+!.vscode/task.json
