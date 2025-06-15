@@ -4,4 +4,4 @@ bin
 
 .vscode/*
 !.vscode/launch.json
-!.vscode/task.json
+!.vscode/tasks.json

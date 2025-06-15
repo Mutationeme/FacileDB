@@ -251,6 +251,7 @@ FACILEDB_DATA_T *FacileDB_Api_Search_Equal(char *p_db_set_name, FACILEDB_RECORD_
     p_db_result_data = search_db_data(p_db_set_info, &target_db_record, &result_data_num);
 
     // Fill to faciledb structure
+    // TODO: copy pointer rather than the entire data
     p_faciledb_data_result_array = calloc(result_data_num, sizeof(FACILEDB_DATA_T));
     for(uint32_t i = 0; i < result_data_num; i++)
     {
@@ -1363,7 +1364,7 @@ DB_DATA_INFO_T *search_db_data(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p
         return NULL;
     }
 
-    for (uint64_t i = 0; i < block_num; i++)
+    for (uint64_t i = 1; i <= block_num; i++)
     {
         DB_DATA_INFO_T db_data_info;
         DB_BLOCK_T db_block;
@@ -1441,6 +1442,7 @@ DB_DATA_INFO_T *search_db_data(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p
             }
 
             // Append db_data to p_result_db_data_infos[result_db_data_info_num]
+            // TODO: copy the pointer rather than entire data.
             db_data_info_init(&(p_result_db_data_infos[result_db_data_info_num]));
             p_result_db_data_infos[result_db_data_info_num].data_num = db_data_info.data_num;
             allocate_db_data_info_resources(&(p_result_db_data_infos[result_db_data_info_num]), p_key_sizes, p_value_sizes);
