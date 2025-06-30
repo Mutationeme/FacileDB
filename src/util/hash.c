@@ -24,7 +24,7 @@ HASH_VALUE_T djb_hash(uint8_t *p_str, uint32_t length)
     return hash_value;
 }
 
-HASH_VALUE_COMPARE_RESULT_E Hash_Compare(HASH_VALUE_T val1, HASH_VALUE_T val2)
+HASH_VALUE_COMPARE_RESULT_E Hash_Api_Compare(HASH_VALUE_T val1, HASH_VALUE_T val2)
 {    
     if(val1 > val2)
     {

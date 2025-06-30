@@ -14,6 +14,6 @@ typedef enum
 } HASH_VALUE_COMPARE_RESULT_E;
 
 HASH_VALUE_T Hash(uint8_t *str, uint32_t length);
-HASH_VALUE_COMPARE_RESULT_E Hash_Compare(HASH_VALUE_T val1, HASH_VALUE_T val2);
+HASH_VALUE_COMPARE_RESULT_E Hash_Api_Compare(HASH_VALUE_T val1, HASH_VALUE_T val2);
 
 #endif
