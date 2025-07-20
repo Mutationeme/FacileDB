@@ -1,0 +1,6 @@
+// Format: RECORD_VALUE_TYPE_CONFIG(type name, sizeof(type) in bytes, compare function)
+
+RECORD_VALUE_TYPE_CONFIG(RECORD_VALUE_TYPE_UINT32, sizeof(uint32_t), record_value_type_uint32_compare)
+RECORD_VALUE_TYPE_CONFIG(RECORD_VALUE_TYPE_HASH, 4, record_value_type_hash_compare)
+RECORD_VALUE_TYPE_CONFIG(RECORD_VALUE_TYPE_STRING, RECORD_VALUE_TYPE_DYNAMIC_SIZE, record_value_type_string_compare)
+// RECORD_VALUE_TYPE_CONFIG(RECORD_VALUE_TYPE_OBJECT, RECORD_VALUE_TYPE_DYNAMIC_SIZE, Record_Value_Type_Api_Object_Compare)

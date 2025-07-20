@@ -6,10 +6,11 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <stddef.h>
 
 #include "faciledb.h"
 #include "faciledb_utils.h"
-#include "faciledb_record_value_type.h"
+#include "record_value_type.h"
 
 #if ENABLE_DB_INDEX
 #include "index.h"
@@ -31,7 +32,7 @@ typedef struct
     uint32_t value_size;
     union
     {
-        FACILEDB_RECORD_VALUE_TYPE_E record_value_type;
+        RECORD_VALUE_TYPE_E record_value_type;
         uint32_t record_value_type_32;
     };
 } DB_RECORD_PROPERTIES_T;
@@ -53,7 +54,12 @@ typedef struct
 
 typedef struct
 {
+    uint64_t data_tag;
+    uint64_t start_db_block_tag;
+    uint64_t created_time;
+    uint64_t modified_time;
     uint32_t record_num;
+    uint32_t deleted;
     DB_RECORD_INFO_T *p_db_record_info;
 } DB_DATA_INFO_T;
 
@@ -66,10 +72,10 @@ typedef struct
     uint64_t created_time;
     uint64_t modified_time;
     uint32_t deleted;
-    uint32_t valid_record_num;
+    uint32_t valid_record_num; // data based
     uint32_t record_properties_num; // numbers of record in the data block
 
-    uint8_t block_data[DB_BLOCK_DATA_SIZE / sizeof(uint8_t)]; // contains lots of db records.
+    uint8_t block_data[FACILEDB_BLOCK_DATA_SIZE]; // contains lots of db records.
 } DB_BLOCK_T;
 
 typedef struct
@@ -92,10 +98,12 @@ typedef struct
 
 // static variables
 static DB_SET_INFO_T db_set_info_instance[DB_SET_INFO_INSTANCE_NUM];
-static char db_directory_path[DB_FILE_PATH_BUFFER_LENGTH] = {0};
+static char db_directory_path[FACILEDB_FILE_PATH_BUFFER_LENGTH] = {0};
 // End of static vaiables
 
 // Local function declaration
+RECORD_VALUE_TYPE_E faciledb_record_value_type_to_record_value_type(FACILEDB_RECORD_VALUE_TYPE_E faciledb_record_value_type);
+FACILEDB_RECORD_VALUE_TYPE_E record_value_type_to_faciledb_record_value_type(RECORD_VALUE_TYPE_E record_value_type);
 bool set_db_directory_path(char *p_db_directory_path);
 bool check_db_directory_init();
 void db_set_info_instances_init();
@@ -140,8 +148,9 @@ void update_db_block_next_block_tag(uint64_t block_tag, uint64_t next_block_tag,
 uint64_t insert_db_data_handler_write_new_db_block(DB_BLOCK_T *p_db_block, DB_SET_INFO_T *p_db_set_info);
 void insert_db_data_handler_assign_db_block_value(DB_BLOCK_T *p_db_block, uint64_t prev_block_tag, uint32_t valid_record_num, uint64_t data_tag);
 uint64_t add_db_set_properties_valid_record_num(DB_SET_PROPERTIES_T *p_db_set_properties);
-DB_DATA_INFO_T *search_db_data(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_target_db_record_info, FACILEDB_RECORD_VALUE_TYPE_COMPARE_RESULT_E compare_type, uint32_t *p_result_db_data_info_num);
-
+DB_DATA_INFO_T *search_db_data(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_target_db_record_info, RECORD_VALUE_TYPE_COMPARE_RESULT_E compare_type, uint32_t *p_result_db_data_info_num);
+void delete_db_data_handler_write_delete_flag(DB_SET_INFO_T *p_db_set_info, uint64_t db_block_tag, uint32_t deleted);
+void delete_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_T *p_db_data_info, uint32_t db_data_num);
 // void copy_db_record_info(DB_RECORD_INFO_T *p_dest_db_record_info, DB_RECORD_INFO_T *p_src_db_record_info);
 // End of local function declaration
 
@@ -159,7 +168,7 @@ void FacileDB_Api_Close()
 
 bool FacileDB_Api_Check_Set_Exist(char *p_db_set_name)
 {
-    char db_set_file_path[DB_FILE_PATH_BUFFER_LENGTH] = {0};
+    char db_set_file_path[FACILEDB_FILE_PATH_BUFFER_LENGTH] = {0};
 
     // TODO: Check inputed p_db_set_name before using it.
     get_db_set_file_path_by_db_set_name(p_db_set_name, db_set_file_path);
@@ -216,11 +225,9 @@ FACILEDB_DATA_T *FacileDB_Api_Search_Equal(char *p_db_set_name, FACILEDB_RECORD_
     DB_DATA_INFO_T *p_db_result_data = NULL;
     FACILEDB_DATA_T *p_faciledb_data_result_array = NULL;
     uint32_t result_data_num = 0;
-    uint32_t expect_target_record_value_type_size = FacileDB_Record_Value_Type_Api_Get_Size(p_faciledb_record->record_value_type);
 
     if (check_db_directory_init() == false || p_faciledb_record == NULL ||
-        p_faciledb_record->record_value_type >= FACILEDB_RECORD_VALUE_TYPE_NUM ||
-        (expect_target_record_value_type_size != FACILEDB_RECORD_VALUE_TYPE_DYNAMIC_SIZE && p_faciledb_record->value_size != expect_target_record_value_type_size))
+        Record_Value_Type_Api_Check_Size_Valid(faciledb_record_value_type_to_record_value_type(p_faciledb_record->record_value_type), p_faciledb_record->value_size) == false)
     {
         // invalid input
         *p_faciledb_data_num = 0;
@@ -252,7 +259,7 @@ FACILEDB_DATA_T *FacileDB_Api_Search_Equal(char *p_db_set_name, FACILEDB_RECORD_
 #endif
     {
         // General sequential search
-        p_db_result_data = search_db_data(p_db_set_info, &target_db_record, FACILEDB_RECORD_VALUE_TYPE_COMPARE_EQUAL, &result_data_num);
+        p_db_result_data = search_db_data(p_db_set_info, &target_db_record, RECORD_VALUE_TYPE_COMPARE_EQUAL, &result_data_num);
     }
 
     // Fill to faciledb structure
@@ -269,8 +276,55 @@ FACILEDB_DATA_T *FacileDB_Api_Search_Equal(char *p_db_set_name, FACILEDB_RECORD_
     // free reuslt buffer
     free(p_db_result_data);
 
+    if(result_data_num == 0)
+    {
+        free(p_faciledb_data_result_array);
+        p_faciledb_data_result_array = NULL;
+    }
+
     *p_faciledb_data_num = result_data_num;
     return p_faciledb_data_result_array;
+}
+
+// Return value: delete data number
+uint32_t FacileDB_Api_Delete_Equal(char *p_db_set_name, FACILEDB_RECORD_T *p_faciledb_record)
+{
+    DB_SET_INFO_T *p_db_set_info = NULL;
+    DB_RECORD_INFO_T target_db_record;
+    DB_DATA_INFO_T *p_target_db_data = NULL;
+    uint32_t delete_data_num = 0;
+
+    if (check_db_directory_init() == false || p_faciledb_record == NULL ||
+        Record_Value_Type_Api_Check_Size_Valid(faciledb_record_value_type_to_record_value_type(p_faciledb_record->record_value_type), p_faciledb_record->value_size) == false)
+    {
+        // invalid input
+        return 0;
+    }
+
+    // TODO: strlen(p_db_set_name) doesn't work if no '\0' at the end of the string.
+    p_db_set_info = query_db_set_info_loaded(p_db_set_name, strlen(p_db_set_name));
+    if (p_db_set_info == NULL)
+    {
+        p_db_set_info = load_db_set_info(p_db_set_name);
+
+        if (p_db_set_info == NULL)
+        {
+            // load db set fail.
+            return 0;
+        }
+    }
+
+    db_record_info_init(&target_db_record);
+    shallow_assign_faciledb_record_to_db_record_info(&target_db_record, p_faciledb_record);
+
+    // TODO: index search
+    // General sequential search
+    p_target_db_data = search_db_data(p_db_set_info, &target_db_record, RECORD_VALUE_TYPE_COMPARE_EQUAL, &delete_data_num);
+
+    // Delete the target data
+    delete_db_data(p_db_set_info, p_target_db_data, delete_data_num);
+
+    return delete_data_num;
 }
 
 void FacileDB_Api_Free_Data_Buffer(FACILEDB_DATA_T *p_faciledb_data)
@@ -300,14 +354,47 @@ void FacileDB_Api_Free_Record_Buffer(FACILEDB_RECORD_T *p_facilledb_record)
     free(p_facilledb_record->p_value);
 }
 
+RECORD_VALUE_TYPE_E faciledb_record_value_type_to_record_value_type(FACILEDB_RECORD_VALUE_TYPE_E faciledb_record_value_type)
+{
+    switch (faciledb_record_value_type)
+    {
+    case FACILEDB_RECORD_VALUE_TYPE_UINT32:
+        return RECORD_VALUE_TYPE_UINT32;
+
+    case FACILEDB_RECORD_VALUE_TYPE_STRING:
+        return RECORD_VALUE_TYPE_STRING;
+
+    default:
+        // Invalid record value type
+        return RECORD_VALUE_TYPE_INVALID;
+    }
+}
+
+FACILEDB_RECORD_VALUE_TYPE_E record_value_type_to_faciledb_record_value_type(RECORD_VALUE_TYPE_E record_value_type)
+{
+    switch (record_value_type)
+    {
+    case RECORD_VALUE_TYPE_UINT32:
+        return FACILEDB_RECORD_VALUE_TYPE_UINT32;
+
+    case RECORD_VALUE_TYPE_STRING:
+        return FACILEDB_RECORD_VALUE_TYPE_STRING;
+
+    default:
+        // Invalid record value type
+        assert(false);
+        break;
+    }
+}
+
 bool set_db_directory_path(char *p_db_directory_path)
 {
     struct stat db_directory_stat;
     size_t str_length = 0;
-    char temp_path_buffer[DB_FILE_PATH_BUFFER_LENGTH] = {0};
+    char temp_path_buffer[FACILEDB_FILE_PATH_BUFFER_LENGTH] = {0};
 
-    strncpy(db_directory_path, p_db_directory_path, DB_FILE_PATH_MAX_LENGTH);
-    db_directory_path[DB_FILE_PATH_MAX_LENGTH] = '\0';
+    strncpy(db_directory_path, p_db_directory_path, FACILEDB_FILE_PATH_MAX_LENGTH);
+    db_directory_path[FACILEDB_FILE_PATH_MAX_LENGTH] = '\0';
 
     str_length = strlen(db_directory_path);
     if (str_length <= 0)
@@ -318,7 +405,7 @@ bool set_db_directory_path(char *p_db_directory_path)
     // The last char is not '/'.
     if (db_directory_path[str_length - 1] != '/')
     {
-        if (str_length == DB_FILE_PATH_MAX_LENGTH)
+        if (str_length == FACILEDB_FILE_PATH_MAX_LENGTH)
         {
             // String length reaches the max buffer length, modify the last char to '/'.
             db_directory_path[str_length - 1] = '/';
@@ -439,7 +526,7 @@ void get_db_set_file_path_by_db_set_name(char *p_db_set_name, char *p_db_set_fil
 
     char file_extension[] = ".faciledb";
 
-    if ((strlen(db_directory_path) + strlen(p_db_set_name) + strlen(file_extension)) > DB_FILE_PATH_MAX_LENGTH)
+    if ((strlen(db_directory_path) + strlen(p_db_set_name) + strlen(file_extension)) > FACILEDB_FILE_PATH_MAX_LENGTH)
     {
         p_db_set_file_path[0] = '\0';
     }
@@ -449,14 +536,14 @@ void get_db_set_file_path_by_db_set_name(char *p_db_set_name, char *p_db_set_fil
         strcat(p_db_set_file_path, p_db_set_name);
         strcat(p_db_set_file_path, file_extension);
 
-        p_db_set_file_path[DB_FILE_PATH_MAX_LENGTH] = '\0';
+        p_db_set_file_path[FACILEDB_FILE_PATH_MAX_LENGTH] = '\0';
     }
 }
 
 DB_SET_INFO_T *load_db_set_info(char *p_db_set_name)
 {
     DB_SET_INFO_T *p_db_set_info = NULL;
-    char db_set_file_path[DB_FILE_PATH_BUFFER_LENGTH] = {0};
+    char db_set_file_path[FACILEDB_FILE_PATH_BUFFER_LENGTH] = {0};
 
     p_db_set_info = request_empty_db_set_info_instance();
     if (p_db_set_info == NULL)
@@ -645,7 +732,7 @@ void db_block_init(DB_BLOCK_T *p_db_block)
     p_db_block->valid_record_num = 0;
     p_db_block->record_properties_num = 0;
 
-    memset(p_db_block->block_data, 0, DB_BLOCK_DATA_SIZE);
+    memset(p_db_block->block_data, 0, FACILEDB_BLOCK_DATA_SIZE);
 }
 
 off_t get_db_block_offset(DB_SET_PROPERTIES_T *p_db_set_properties, uint64_t block_tag)
@@ -744,6 +831,195 @@ void read_db_block_attributes(DB_SET_INFO_T *p_db_set_info, uint64_t block_tag, 
     fread(&(p_db_block->record_properties_num), sizeof(p_db_block->record_properties_num), 1, p_db_set_file);
 }
 
+void extract_db_data_info_from_db_blocks_handler_update_time(DB_DATA_INFO_T *p_db_data_info, DB_BLOCK_T *p_db_block)
+{
+    if(p_db_block->created_time > p_db_data_info->created_time)
+    {
+        p_db_data_info->created_time = p_db_block->created_time;
+    }
+
+    if(p_db_block->modified_time > p_db_data_info->modified_time)
+    {
+        p_db_data_info->modified_time = p_db_block->modified_time;
+    }
+}
+
+void extract_db_data_info_from_db_blocks(DB_DATA_INFO_T *p_db_data_info, uint64_t start_block_tag, DB_SET_INFO_T *p_db_set_info)
+{
+    DB_BLOCK_T db_block;
+    uint32_t record_num = 0;
+    DB_RECORD_INFO_T *result = NULL;
+    uint8_t *p_block_data = NULL;
+    uint8_t *p_block_end_address = NULL;
+
+    db_block_init(&db_block);
+    read_db_block(p_db_set_info, start_block_tag, &db_block);
+
+    p_db_data_info->data_tag = db_block.data_tag;
+    p_db_data_info->start_db_block_tag = start_block_tag;
+    extract_db_data_info_from_db_blocks_handler_update_time(p_db_data_info, &db_block);
+    // update record_num at the end of this function.
+    p_db_data_info->deleted = db_block.deleted;
+
+    record_num = db_block.valid_record_num;
+    result = malloc(record_num * sizeof(DB_RECORD_INFO_T));
+    p_block_data = db_block.block_data;
+    p_block_end_address = ((uint8_t *)&(db_block)) + get_db_block_size();
+
+    if (result == NULL)
+    {
+        p_db_data_info->record_num = 0;
+        p_db_data_info->p_db_record_info = NULL;
+        return;
+    }
+
+    for (uint32_t i = 0; i < record_num; i++)
+    {
+        bool find_valid_db_record = false;
+        uint32_t remaining_size = 0;
+
+        db_record_info_init(&(result[i]));
+
+        // check if valid record (deleted == false) and reaches to the valid one.
+        while (find_valid_db_record == false)
+        {
+            if ((p_block_data + get_db_record_properties_size()) > p_block_end_address)
+            {
+                // clear the current block and read next block from next_block_tag and update the variables.
+                assert(db_block.next_block_tag != 0);
+
+                db_block_init(&db_block);
+                read_db_block(p_db_set_info, db_block.next_block_tag, &db_block);
+                extract_db_data_info_from_db_blocks_handler_update_time(p_db_data_info, &db_block);
+                p_block_data = db_block.block_data;
+                p_block_end_address = ((uint8_t *)&(db_block)) + get_db_block_size();
+            }
+
+            // check if the record deleted or not.
+            if (((DB_RECORD_PROPERTIES_T *)p_block_data)->deleted == 0)
+            {
+                find_valid_db_record = true;
+                break;
+            }
+            else
+            {
+                // record was deleted, bypass it.
+                uint32_t key_size = ((DB_RECORD_PROPERTIES_T *)p_block_data)->key_size;
+                uint32_t value_size = ((DB_RECORD_PROPERTIES_T *)p_block_data)->value_size;
+
+                find_valid_db_record = false;
+                p_block_data += get_db_record_properties_size();
+
+                remaining_size = key_size;
+                while (remaining_size > 0)
+                {
+                    uint32_t remaining_block_size = p_block_end_address - p_block_data;
+                    uint32_t forward_size = (remaining_block_size > remaining_size) ? (remaining_size) : (remaining_block_size);
+
+                    p_block_data += forward_size;
+                    if (forward_size == 0)
+                    {
+                        // p_block_data reaches the end of the block, load next block and update variables.
+                        assert(db_block.next_block_tag != 0);
+
+                        db_block_init(&db_block);
+                        read_db_block(p_db_set_info, db_block.next_block_tag, &db_block);
+                        extract_db_data_info_from_db_blocks_handler_update_time(p_db_data_info, &db_block);
+                        p_block_data = db_block.block_data;
+                        p_block_end_address = ((uint8_t *)&(db_block)) + get_db_block_size();
+                    }
+                    remaining_size -= forward_size;
+                }
+
+                remaining_size = value_size;
+                while (remaining_size > 0)
+                {
+                    uint32_t remaining_block_size = p_block_end_address - p_block_data;
+                    uint32_t forward_size = (remaining_block_size > remaining_size) ? (remaining_size) : (remaining_block_size);
+
+                    p_block_data += forward_size;
+                    if (forward_size == 0)
+                    {
+                        // p_block_data reaches the end of the block, load next block and update variables.
+                        assert(db_block.next_block_tag != 0);
+
+                        db_block_init(&db_block);
+                        read_db_block(p_db_set_info, db_block.next_block_tag, &db_block);
+                        extract_db_data_info_from_db_blocks_handler_update_time(p_db_data_info, &db_block);
+                        p_block_data = db_block.block_data;
+                        p_block_end_address = ((uint8_t *)&(db_block)) + get_db_block_size();
+                    }
+                    remaining_size -= forward_size;
+                }
+            }
+        }
+        // Setting record properties offset and copy db_record_properties from db_block_data.
+        result[i].db_record_properties_offset = get_db_block_offset(&(p_db_set_info->db_set_properties), db_block.block_tag) + (p_block_data - ((uint8_t *)&db_block));
+        memcpy(&(result[i].db_record_properties), p_block_data, get_db_record_properties_size());
+        p_block_data += get_db_record_properties_size();
+
+        // Copy db_record from the db blocks.
+        allocate_db_record_resources(&(result[i].db_record), result[i].db_record_properties.key_size, result[i].db_record_properties.value_size);
+
+        // copy db_record key from db block data.
+        remaining_size = result[i].db_record_properties.key_size;
+        while (remaining_size > 0)
+        {
+            uint32_t remaining_block_size = p_block_end_address - p_block_data;
+            uint32_t copy_size = (remaining_block_size > remaining_size) ? (remaining_size) : (remaining_block_size);
+            uint8_t *p_key = NULL;
+
+            if (copy_size == 0)
+            {
+                // read next block and update variables.
+                assert(db_block.next_block_tag != 0);
+
+                db_block_init(&db_block);
+                read_db_block(p_db_set_info, db_block.next_block_tag, &db_block);
+                extract_db_data_info_from_db_blocks_handler_update_time(p_db_data_info, &db_block);
+                p_block_data = db_block.block_data;
+                p_block_end_address = ((uint8_t *)&(db_block)) + get_db_block_size();
+
+                continue;
+            }
+
+            p_key = result[i].db_record.p_key + result[i].db_record_properties.key_size - remaining_size;
+            memcpy(p_key, p_block_data, copy_size);
+            p_block_data += copy_size;
+            remaining_size -= copy_size;
+        }
+
+        remaining_size = result[i].db_record_properties.value_size;
+        while (remaining_size > 0)
+        {
+            uint32_t remaining_block_size = p_block_end_address - p_block_data;
+            uint32_t copy_size = (remaining_block_size > remaining_size) ? (remaining_size) : (remaining_block_size);
+            uint8_t *p_value = NULL;
+
+            if (copy_size == 0)
+            {
+                // read next block and update variables.
+                assert(db_block.next_block_tag != 0);
+
+                db_block_init(&db_block);
+                read_db_block(p_db_set_info, db_block.next_block_tag, &db_block);
+                extract_db_data_info_from_db_blocks_handler_update_time(p_db_data_info, &db_block);
+                p_block_data = db_block.block_data;
+                p_block_end_address = ((uint8_t *)&(db_block)) + get_db_block_size();
+            }
+
+            p_value = result[i].db_record.p_value + result[i].db_record_properties.value_size - remaining_size;
+            memcpy(p_value, p_block_data, copy_size);
+            p_block_data += copy_size;
+            remaining_size -= copy_size;
+        }
+    }
+
+    p_db_data_info->p_db_record_info = result;
+    p_db_data_info->record_num = record_num;
+}
+
+// currently, this function only work for unit test.
 DB_RECORD_INFO_T *extract_db_record_info_from_db_blocks(uint64_t block_tag, DB_SET_INFO_T *p_db_set_info, uint32_t *p_record_num)
 {
     DB_BLOCK_T db_block;
@@ -918,7 +1194,7 @@ void db_record_properties_init(DB_RECORD_PROPERTIES_T *p_db_record_properties)
     p_db_record_properties->deleted = 0;
     p_db_record_properties->key_size = 0;
     p_db_record_properties->value_size = 0;
-    p_db_record_properties->record_value_type = FACILEDB_RECORD_VALUE_TYPE_INVALID;
+    p_db_record_properties->record_value_type = RECORD_VALUE_TYPE_INVALID;
 }
 
 void copy_db_record_properties(DB_RECORD_PROPERTIES_T *p_dest_db_record_properties, DB_RECORD_PROPERTIES_T *p_src_db_record_properties)
@@ -940,31 +1216,36 @@ size_t get_db_record_properties_size()
 
 void db_data_info_init(DB_DATA_INFO_T *p_db_data_info)
 {
+    p_db_data_info->data_tag = 0;
+    p_db_data_info->start_db_block_tag = 0;
+    p_db_data_info->created_time = 0;
+    p_db_data_info->modified_time = 0;
     p_db_data_info->record_num = 0;
+    p_db_data_info->deleted = 0;
     p_db_data_info->p_db_record_info = NULL;
 }
 
 // Setup record_num before calling this function.
-bool allocate_db_data_info_resources(DB_DATA_INFO_T *p_db_data_info, uint32_t *p_key_sizes, uint32_t *p_value_sizes)
-{
-    uint32_t record_num = p_db_data_info->record_num;
+// bool allocate_db_data_info_resources(DB_DATA_INFO_T *p_db_data_info, uint32_t *p_key_sizes, uint32_t *p_value_sizes)
+// {
+//     uint32_t record_num = p_db_data_info->record_num;
 
-    p_db_data_info->p_db_record_info = calloc(record_num, sizeof(DB_RECORD_INFO_T));
+//     p_db_data_info->p_db_record_info = calloc(record_num, sizeof(DB_RECORD_INFO_T));
 
-    if (p_db_data_info->p_db_record_info == NULL)
-    {
-        return false;
-    }
+//     if (p_db_data_info->p_db_record_info == NULL)
+//     {
+//         return false;
+//     }
 
-    for (uint32_t i = 0; i < record_num; i++)
-    {
-        p_db_data_info->p_db_record_info[i].db_record_properties.key_size = p_key_sizes[i];
-        p_db_data_info->p_db_record_info[i].db_record_properties.value_size = p_value_sizes[i];
-        allocate_db_record_info_resources(&(p_db_data_info->p_db_record_info[i]));
-    }
+//     for (uint32_t i = 0; i < record_num; i++)
+//     {
+//         p_db_data_info->p_db_record_info[i].db_record_properties.key_size = p_key_sizes[i];
+//         p_db_data_info->p_db_record_info[i].db_record_properties.value_size = p_value_sizes[i];
+//         allocate_db_record_info_resources(&(p_db_data_info->p_db_record_info[i]));
+//     }
 
-    return true;
-}
+//     return true;
+// }
 
 void free_db_data_info_resources(DB_DATA_INFO_T *p_db_data_info)
 {
@@ -978,7 +1259,12 @@ void free_db_data_info_resources(DB_DATA_INFO_T *p_db_data_info)
 // shallow copy: only copy the first-layer values and pointers of db_record_info.
 void shallow_copy_db_data_info(DB_DATA_INFO_T *p_dest_db_data_info, DB_DATA_INFO_T *p_src_db_data_info)
 {
+    p_dest_db_data_info->data_tag = p_src_db_data_info->data_tag;
+    p_dest_db_data_info->start_db_block_tag = p_src_db_data_info->start_db_block_tag;
+    p_dest_db_data_info->created_time = p_src_db_data_info->created_time;
+    p_dest_db_data_info->modified_time = p_src_db_data_info->modified_time;
     p_dest_db_data_info->record_num = p_src_db_data_info->record_num;
+    p_dest_db_data_info->deleted = p_src_db_data_info->deleted;
     p_dest_db_data_info->p_db_record_info = p_src_db_data_info->p_db_record_info;
 }
 
@@ -988,7 +1274,7 @@ bool shallow_assign_db_data_info_to_failedb_data(FACILEDB_DATA_T *p_faciledb_dat
     p_faciledb_data->record_num = p_db_data_info->record_num;
     p_faciledb_data->p_data_records = calloc(p_db_data_info->record_num, sizeof(FACILEDB_RECORD_T));
 
-    if(p_faciledb_data->p_data_records == NULL)
+    if (p_faciledb_data->p_data_records == NULL)
     {
         return false;
     }
@@ -1007,7 +1293,7 @@ bool shallow_assign_faciledb_data_to_db_data_info(DB_DATA_INFO_T *p_db_data_info
     p_db_data_info->record_num = p_faciledb_data->record_num;
     p_db_data_info->p_db_record_info = calloc(p_db_data_info->record_num, sizeof(DB_RECORD_INFO_T));
 
-    if(p_db_data_info->p_db_record_info == NULL)
+    if (p_db_data_info->p_db_record_info == NULL)
     {
         return false;
     }
@@ -1133,18 +1419,11 @@ bool faciledb_record_to_db_record_info(FACILEDB_RECORD_T *p_faciledb_record, DB_
 {
     DB_RECORD_PROPERTIES_T *p_db_record_properties = &(p_db_record_info->db_record_properties);
     DB_RECORD_T *p_db_record = &(p_db_record_info->db_record);
-    uint32_t record_value_size = FacileDB_Record_Value_Type_Api_Get_Size(p_faciledb_record->record_value_type);
-
-    if (record_value_size != FACILEDB_RECORD_VALUE_TYPE_DYNAMIC_SIZE &&
-        record_value_size != p_faciledb_record->value_size)
-    {
-        return false;
-    }
 
     p_db_record_properties->deleted = 0;
     p_db_record_properties->key_size = p_faciledb_record->key_size;
     p_db_record_properties->value_size = p_faciledb_record->value_size;
-    p_db_record_properties->record_value_type = p_faciledb_record->record_value_type;
+    p_db_record_properties->record_value_type = faciledb_record_value_type_to_record_value_type(p_faciledb_record->record_value_type);
 
     allocate_db_record_resources(p_db_record, p_db_record_properties->key_size, p_db_record_properties->value_size);
     memcpy(p_db_record->p_key, p_faciledb_record->p_key, p_db_record_properties->key_size);
@@ -1162,20 +1441,20 @@ void shallow_assign_faciledb_record_to_db_record_info(DB_RECORD_INFO_T *p_db_rec
     p_db_record_properties->deleted = 0;
     p_db_record_properties->key_size = p_faciledb_record->key_size;
     p_db_record_properties->value_size = p_faciledb_record->value_size;
-    p_db_record_properties->record_value_type = p_faciledb_record->record_value_type;
+    p_db_record_properties->record_value_type = faciledb_record_value_type_to_record_value_type(p_faciledb_record->record_value_type);
 
     p_db_record->p_key = p_faciledb_record->p_key;
     p_db_record->p_value = p_faciledb_record->p_value;
 
-    p_db_record_info->db_record_properties_offset = 0; //invalid
+    p_db_record_info->db_record_properties_offset = 0; // invalid
 }
 
-// shallow assgin values and pointers, would not allocate memory for dynamic resources. 
+// shallow assgin values and pointers, would not allocate memory for dynamic resources.
 void shallow_assign_db_record_info_to_faciledb_record(FACILEDB_RECORD_T *p_faciledb_record, DB_RECORD_INFO_T *p_db_record_info)
 {
     p_faciledb_record->key_size = p_db_record_info->db_record_properties.key_size;
     p_faciledb_record->value_size = p_db_record_info->db_record_properties.value_size;
-    p_faciledb_record->record_value_type = p_db_record_info->db_record_properties.record_value_type;
+    p_faciledb_record->record_value_type = record_value_type_to_faciledb_record_value_type(p_db_record_info->db_record_properties.record_value_type);
 
     p_faciledb_record->p_key = p_db_record_info->db_record.p_key;
     p_faciledb_record->p_value = p_db_record_info->db_record.p_value;
@@ -1187,7 +1466,7 @@ uint32_t insert_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_T *p_db_data_
 {
     DB_BLOCK_T new_db_block;
     uint8_t *p_db_block_write = new_db_block.block_data;
-    uint8_t *p_db_block_end = new_db_block.block_data + DB_BLOCK_DATA_SIZE;
+    uint8_t *p_db_block_end = new_db_block.block_data + FACILEDB_BLOCK_DATA_SIZE;
     size_t db_record_properties_size = get_db_record_properties_size();
     uint64_t last_block_tag = 0;
 
@@ -1209,7 +1488,7 @@ uint32_t insert_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_T *p_db_data_
 
             // update local variables.
             p_db_block_write = new_db_block.block_data;
-            p_db_block_end = new_db_block.block_data + DB_BLOCK_DATA_SIZE;
+            p_db_block_end = new_db_block.block_data + FACILEDB_BLOCK_DATA_SIZE;
         }
 
         // copy record properties to block data.
@@ -1236,7 +1515,7 @@ uint32_t insert_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_T *p_db_data_
                 insert_db_data_handler_assign_db_block_value(&new_db_block, prev_block_tag, p_db_data_info->record_num, data_tag);
 
                 p_db_block_write = new_db_block.block_data;
-                p_db_block_end = new_db_block.block_data + DB_BLOCK_DATA_SIZE;
+                p_db_block_end = new_db_block.block_data + FACILEDB_BLOCK_DATA_SIZE;
 
                 continue;
             }
@@ -1266,7 +1545,7 @@ uint32_t insert_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_T *p_db_data_
 
                 // update local variables / pointers
                 p_db_block_write = new_db_block.block_data;
-                p_db_block_end = new_db_block.block_data + DB_BLOCK_DATA_SIZE;
+                p_db_block_end = new_db_block.block_data + FACILEDB_BLOCK_DATA_SIZE;
 
                 continue;
             }
@@ -1350,15 +1629,15 @@ uint64_t add_db_set_properties_valid_record_num(DB_SET_PROPERTIES_T *p_db_set_pr
 }
 
 // return value: DB_DATA_INFO_T array whose length is *p_result_db_data_info_num
-DB_DATA_INFO_T *search_db_data(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_target_db_record_info, FACILEDB_RECORD_VALUE_TYPE_COMPARE_RESULT_E compare_type, uint32_t *p_result_db_data_info_num)
+// TODO: if enable index, rename this function to search_db_data_sequential and named indexed one to seaarch_db_data_indexed. Use search_db_data to call these two types to search function.
+DB_DATA_INFO_T *search_db_data(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_target_db_record_info, RECORD_VALUE_TYPE_COMPARE_RESULT_E compare_type, uint32_t *p_result_db_data_info_num)
 {
     uint64_t block_num = p_db_set_info->db_set_properties.block_num;
 
     void *p_target_key = p_target_db_record_info->db_record.p_key;
     uint32_t target_key_size = p_target_db_record_info->db_record_properties.key_size;
     void *p_target_value = p_target_db_record_info->db_record.p_value;
-    uint32_t target_value_size = p_target_db_record_info->db_record_properties.value_size;
-    FACILEDB_RECORD_VALUE_TYPE_E target_value_type = p_target_db_record_info->db_record_properties.record_value_type;
+    RECORD_VALUE_TYPE_E target_value_type = p_target_db_record_info->db_record_properties.record_value_type;
 
     DB_DATA_INFO_T *p_result_db_data_infos = malloc(DB_SEARCH_DATA_INFO_BUFFER_LEN * sizeof(DB_DATA_INFO_T));
     uint32_t result_db_data_infos_buffer_len = DB_SEARCH_DATA_INFO_BUFFER_LEN;
@@ -1387,8 +1666,8 @@ DB_DATA_INFO_T *search_db_data(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p
             continue;
         }
 
-        // Read the whole block and next blocks if they exists.
-        db_data_info.p_db_record_info = extract_db_record_info_from_db_blocks(db_block.block_tag, p_db_set_info, &(db_data_info.record_num));
+        // Read the whole block and next blocks if they exists. The buffers will be allocated, and the record content will be copied into the record_info
+        extract_db_data_info_from_db_blocks(&db_data_info, block_tag, p_db_set_info);
 
         // Search if the target record matched or not.
         for (uint32_t record_idx = 0; record_idx < db_data_info.record_num; record_idx++)
@@ -1396,8 +1675,8 @@ DB_DATA_INFO_T *search_db_data(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p
             if (target_key_size == db_data_info.p_db_record_info[record_idx].db_record_properties.key_size &&
                 memcmp(db_data_info.p_db_record_info[record_idx].db_record.p_key, p_target_key, target_key_size) == 0 &&
                 target_value_type == db_data_info.p_db_record_info[record_idx].db_record_properties.record_value_type &&
-                target_value_size == db_data_info.p_db_record_info[record_idx].db_record_properties.value_size &&
-                FacileDB_Record_Value_Type_Api_Compare(target_value_type, db_data_info.p_db_record_info[record_idx].db_record.p_value, p_target_value) == compare_type)
+                // value size comparison doesn't need (?)
+                Record_Value_Type_Api_Compare(target_value_type, db_data_info.p_db_record_info[record_idx].db_record.p_value, p_target_value) == compare_type)
             {
                 record_match = true;
                 break;
@@ -1439,4 +1718,40 @@ DB_DATA_INFO_T *search_db_data(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p
 
     *p_result_db_data_info_num = result_db_data_info_num;
     return p_result_db_data_infos;
+}
+
+void delete_db_data_handler_write_delete_flag(DB_SET_INFO_T *p_db_set_info, uint64_t db_block_tag, uint32_t deleted)
+{
+    FILE *p_db_set_file = p_db_set_info->file;
+    DB_SET_PROPERTIES_T *p_db_set_properties = &(p_db_set_info->db_set_properties);
+    off_t delete_flag_offset = get_db_block_offset(p_db_set_properties, db_block_tag) + offsetof(DB_BLOCK_T, deleted);
+    uint64_t current_time = (uint64_t)get_current_time();
+    off_t modified_time_offset = get_db_block_offset(p_db_set_properties, db_block_tag) + offsetof(DB_BLOCK_T, modified_time);
+
+
+    fseek(p_db_set_file, delete_flag_offset, SEEK_SET);
+    fwrite(&deleted, sizeof(deleted), 1, p_db_set_file);
+
+    fseek(p_db_set_file, modified_time_offset, SEEK_SET);
+    fwrite(&current_time, sizeof(current_time), 1, p_db_set_file);
+}
+
+void delete_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_T *p_db_data_info, uint32_t db_data_num)
+{
+    DB_BLOCK_T db_block;
+    uint64_t block_tag = 0;
+    db_block_init(&db_block);
+
+    for(uint32_t i = 0; i < db_data_num; i++)
+    {
+        block_tag = p_db_data_info[i].start_db_block_tag;
+        
+        while(block_tag != 0)
+        {
+            read_db_block(p_db_set_info, block_tag, &db_block);
+            delete_db_data_handler_write_delete_flag(p_db_set_info, db_block.block_tag, 1);
+            // continue to the next block.
+            block_tag = db_block.next_block_tag;
+        }
+    }
 }
