@@ -5,3 +5,5 @@ bin
 .vscode/*
 !.vscode/launch.json
 !.vscode/tasks.json
+
+~$FacileDB.pptx

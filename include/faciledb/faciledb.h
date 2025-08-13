@@ -16,18 +16,22 @@
 #define FACILEDB_FILE_PATH_MAX_LENGTH (FACILEDB_FILE_PATH_BUFFER_LENGTH - 1)
 
 #ifndef ENABLE_DB_INDEX
-#define ENABLE_DB_INDEX (0)
+#define ENABLE_DB_INDEX (1)
 #endif
 
+// user input format
 typedef enum
 {
-    FACILEDB_RECORD_VALUE_TYPE_UINT32,
-    FACILEDB_RECORD_VALUE_TYPE_STRING,
-
-    FACILEDB_RECORD_VALUE_TYPE_NUM
+#ifdef FACILEDB_RECORD_VALUE_TYPE_CONFIG
+#undef FACILEDB_RECORD_VALUE_TYPE_CONFIG
+#endif
+#define FACILEDB_RECORD_VALUE_TYPE_CONFIG(record_value_type, record_value_type_size) record_value_type,
+#include "faciledb_record_value_type_table.h"
+#undef FACILEDB_RECORD_VALUE_TYPE_CONFIG
+    FACILEDB_RECORD_VALUE_TYPE_NUM,
+    FACILEDB_RECORD_VALUE_TYPE_INVALID = FACILEDB_RECORD_VALUE_TYPE_NUM
 } FACILEDB_RECORD_VALUE_TYPE_E;
 
-// user input format
 typedef struct
 {
     uint32_t key_size;
@@ -57,5 +61,10 @@ uint32_t FacileDB_Api_Delete_Equal(char *p_db_set_name, FACILEDB_RECORD_T *p_fac
 
 void FacileDB_Api_Free_Data_Buffer(FACILEDB_DATA_T *p_faciledb_data);
 void FacileDB_Api_Free_Record_Buffer(FACILEDB_RECORD_T *p_facilledb_record);
+
+#if ENABLE_DB_INDEX
+// p_faciledb_record: p_value and value_size could be any value.
+bool FacileDB_Api_Make_Record_Index(char *p_db_set_name, FACILEDB_RECORD_T *p_faciledb_record);
+#endif
 
 #endif // __FACILEDB_H__

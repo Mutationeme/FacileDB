@@ -32,7 +32,7 @@ void check_index_properties(INDEX_PROPERTIES_T *p_index_properties_1, INDEX_PROP
 
 void check_index_node(INDEX_NODE_T *p_index_node_1, INDEX_NODE_T *p_index_node_2, INDEX_ID_TYPE_E index_id_type)
 {
-    uint32_t index_id_size = index_id_type_handle_table[index_id_type].size;
+    uint32_t index_id_size = Index_Id_Type_Get_Size(index_id_type);
     bool is_leaf_node = (p_index_node_1->child_tag[0] == 0) ? (true) : (false);
 
     assert(p_index_node_1->tag == p_index_node_2->tag);

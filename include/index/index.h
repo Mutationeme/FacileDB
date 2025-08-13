@@ -29,10 +29,11 @@ typedef enum
 #ifdef INDEX_ID_TYPE_CONFIG
 #undef INDEX_ID_TYPE_CONFIG
 #endif
-#define INDEX_ID_TYPE_CONFIG(index_id_type, index_id_size, index_id_compare_function) index_id_type,
+#define INDEX_ID_TYPE_CONFIG(index_id_type, index_id_size) index_id_type,
 #include "index_id_type_table.h"
 #undef INDEX_ID_TYPE_CONFIG
-    INDEX_ID_TYPE_NUM
+    INDEX_ID_TYPE_NUM,
+    INDEX_ID_TYPE_INVALID = INDEX_ID_TYPE_NUM
 } INDEX_ID_TYPE_E;
 
 void Index_Api_Init(char *p_index_directory_path);

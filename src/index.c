@@ -8,7 +8,7 @@
 #include <unistd.h>
 
 #include "index.h"
-#include "index_id_type_compare.h"
+#include "index_id_type.h"
 
 // Structure definition
 typedef struct
@@ -67,16 +67,6 @@ typedef struct
 // Static Varialbes
 static INDEX_INFO_T index_info_instance;
 static char index_directory_path[INDEX_FILE_PATH_BUFFER_LENGTH] = {0};
-// clang-format off
-static INDEX_ID_TYPE_HANDLE_TBL_T index_id_type_handle_table[INDEX_ID_TYPE_NUM] = {
-#ifdef INDEX_ID_TYPE_CONFIG
-#undef INDEX_ID_TYPE_CONFIG
-#endif
-#define INDEX_ID_TYPE_CONFIG(index_id_type, index_id_size, index_id_compare_function) {.size = index_id_size, .p_compare_func = index_id_compare_function},
-#include "index_id_type_table.h"
-#undef INDEX_ID_TYPE_CONFIG
-};
-// clang-format on
 // End of Static Variables
 
 // Local function declaration
@@ -516,7 +506,7 @@ bool read_index_node(INDEX_INFO_T *p_index_info, uint32_t tag, INDEX_NODE_T *p_i
 off_t get_node_offset(INDEX_PROPERTIES_T *p_index_properties, uint32_t tag)
 {
     size_t index_properties_size = get_index_properties_size(p_index_properties);
-    size_t index_element_size = index_id_type_handle_table[p_index_properties->index_id_type].size + INDEX_PAYLOAD_SIZE;
+    size_t index_element_size = Index_Id_Type_Get_Size(p_index_properties->index_id_type) + INDEX_PAYLOAD_SIZE;
     // tag + level + length + parent_tag + next_tag + child_tag[INDEX_CHILD_TAG_ORDER] + elements[INDEX_ORDER]
     size_t index_node_size = (sizeof(uint32_t) * (INDEX_CHILD_TAG_ORDER + 5)) + (index_element_size * INDEX_ORDER);
 
@@ -540,7 +530,7 @@ void index_element_init(INDEX_ELEMENT_T *p_index_element)
 
 void setup_index_element(INDEX_ELEMENT_T *p_index_element, void *p_index_id, INDEX_ID_TYPE_E index_id_type, void *p_payload, uint32_t payload_size)
 {
-    uint32_t index_id_size = index_id_type_handle_table[index_id_type].size;
+    uint32_t index_id_size = Index_Id_Type_Get_Size(index_id_type);
     payload_size = (payload_size > INDEX_PAYLOAD_SIZE) ? INDEX_PAYLOAD_SIZE : payload_size;
     allocate_index_element_resources(p_index_element, index_id_size);
 
@@ -566,7 +556,7 @@ void write_index_elements(INDEX_INFO_T *p_index_info, uint32_t tag, uint32_t ind
     INDEX_PROPERTIES_T *p_index_properties = &(p_index_info->index_properties);
     FILE *p_index_file = p_index_info->index_file;
     off_t index_element_offset = get_index_element_offset(p_index_properties, tag, index_element_position);
-    uint32_t index_id_size = index_id_type_handle_table[p_index_properties->index_id_type].size;
+    uint32_t index_id_size = Index_Id_Type_Get_Size(p_index_properties->index_id_type);
 
     fseek(p_index_file, index_element_offset, SEEK_SET);
     for (uint32_t i = 0; i < write_length; i++)
@@ -596,7 +586,7 @@ void read_index_elements(INDEX_INFO_T *p_index_info, const uint32_t tag, const u
     INDEX_PROPERTIES_T *p_index_properties = &(p_index_info->index_properties);
     FILE *p_index_file = p_index_info->index_file;
     off_t index_element_offset = get_index_element_offset(p_index_properties, tag, index_element_position);
-    uint32_t index_id_size = index_id_type_handle_table[p_index_properties->index_id_type].size;
+    uint32_t index_id_size = Index_Id_Type_Get_Size(p_index_properties->index_id_type);
 
     fseek(p_index_file, index_element_offset, SEEK_SET);
     for (uint32_t i = 0; i < read_length; i++)
@@ -611,7 +601,7 @@ void read_index_elements(INDEX_INFO_T *p_index_info, const uint32_t tag, const u
 
 off_t get_index_element_offset(INDEX_PROPERTIES_T *p_index_properties, uint32_t tag, uint32_t index_element_position)
 {
-    uint32_t index_id_size = index_id_type_handle_table[p_index_properties->index_id_type].size;
+    uint32_t index_id_size = Index_Id_Type_Get_Size(p_index_properties->index_id_type);
     off_t index_node_offset = get_node_offset(p_index_properties, tag);
     // tag + level + length + parent_tag + next_tag + child_tag[INDEX_CHILD_TAG_ORDER]
     size_t index_before_fields_size = sizeof(uint32_t) * (INDEX_CHILD_TAG_ORDER + 5);
@@ -642,7 +632,7 @@ void free_index_element_resources(INDEX_ELEMENT_T *p_index_element)
 // Deep copy index element
 void deep_copy_index_element(INDEX_ELEMENT_T *p_dest_index_element, INDEX_ELEMENT_T *p_src_index_element, INDEX_ID_TYPE_E index_id_type)
 {
-    uint32_t index_id_size = index_id_type_handle_table[index_id_type].size;
+    uint32_t index_id_size = Index_Id_Type_Get_Size(index_id_type);
 
     free_index_element_resources(p_dest_index_element);
     allocate_index_element_resources(p_dest_index_element, index_id_type);
@@ -663,7 +653,7 @@ uint32_t find_element_position_in_the_node(INDEX_NODE_T *p_index_node, INDEX_ELE
     while (start < end)
     {
         uint32_t mid = start + ((end - start) / 2);
-        INDEX_ID_COMPARE_RESULT_E cmp_result = index_id_type_handle_table[index_id_type].p_compare_func(p_index_element->p_index_id, p_index_node->elements[mid].p_index_id);
+        INDEX_ID_COMPARE_RESULT_E cmp_result = Index_Id_Type_Compare(index_id_type, p_index_element->p_index_id, p_index_node->elements[mid].p_index_id);
 
         if (cmp_result == INDEX_ID_COMPARE_LEFT_GREATER)
         {
@@ -872,7 +862,7 @@ void insert_index_element_handler(INDEX_INFO_T *p_index_info, INDEX_NODE_T *p_in
             p_index_node->elements[i].p_index_id = p_index_node->elements[i - 1].p_index_id;
             p_index_node->elements[i - 1].p_index_id = temp_ptr;
             // copy static resources: index_payload.
-            memcpy(&(p_index_node->elements[i].index_payload), &(p_index_node->elements[i - 1].index_payload), sizeof(INDEX_PAYLOAD_SIZE));
+            memcpy(&(p_index_node->elements[i].index_payload), &(p_index_node->elements[i - 1].index_payload), INDEX_PAYLOAD_SIZE);
             // move child_tags
             p_index_node->child_tag[i + 1] = p_index_node->child_tag[i];
         }
@@ -952,7 +942,7 @@ uint8_t *search_index_element_handler(INDEX_INFO_T *p_index_info, INDEX_NODE_T *
 
     for (i = position; i < p_index_node->length; i++)
     {
-        if (index_id_type_handle_table[index_id_type].p_compare_func(p_target_index_element->p_index_id, p_index_node->elements[i].p_index_id) == INDEX_ID_COMPARE_EQUAL)
+        if (Index_Id_Type_Compare(index_id_type, p_target_index_element->p_index_id, p_index_node->elements[i].p_index_id) == INDEX_ID_COMPARE_EQUAL)
         {
             match_end_position = i;
             compare_equal_length++;
