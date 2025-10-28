@@ -1,6 +1,11 @@
 #ifndef __FACILEDB_H__
 #define __FACILEDB_H__
 
+// Feature Options
+#ifndef ENABLE_DB_INDEX
+#define ENABLE_DB_INDEX (1)
+#endif // ENABLE_DB_INDEX
+
 #include <stdint.h>
 #include <stdio.h>
 
@@ -14,10 +19,6 @@
 #endif
 
 #define FACILEDB_FILE_PATH_MAX_LENGTH (FACILEDB_FILE_PATH_BUFFER_LENGTH - 1)
-
-#ifndef ENABLE_DB_INDEX
-#define ENABLE_DB_INDEX (1)
-#endif
 
 // user input format
 typedef enum

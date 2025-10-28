@@ -1,9 +1,9 @@
 bin
 .DS_Store
-*.sh
+.vscode
+*.code-workspace
 
-.vscode/*
-!.vscode/launch.json
-!.vscode/tasks.json
+*.sh
+mema*
 
 ~$FacileDB.pptx

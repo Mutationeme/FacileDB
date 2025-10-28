@@ -17,7 +17,8 @@
             "command": "rm",
             "args": [
                 "-rf",
-                "./bin/test_db_files"
+                "./bin/test_db_files",
+                "./bin/test_index_files"
             ]
         }
     ]

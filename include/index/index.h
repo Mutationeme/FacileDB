@@ -4,8 +4,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#ifndef __INDEX_TEST__
-#define __INDEX_TEST__ (0)
+#if !defined(INDEX_TEST)
+#include "faciledb_index.h"
 #endif
 
 #ifndef INDEX_ORDER
@@ -40,6 +40,7 @@ void Index_Api_Init(char *p_index_directory_path);
 bool Index_Api_Index_Key_Exist(char *p_index_key);
 void Index_Api_Insert_Element(char *p_index_key, void *p_index_id, INDEX_ID_TYPE_E index_id_type, void *p_index_payload, uint32_t payload_size);
 void *Index_Api_Search_Equal(char *p_index_key, void *p_target_index_id, INDEX_ID_TYPE_E index_id_type, uint32_t *p_result_length);
+void Index_Api_Free_Search_Result(void *p_result);
 void Index_Api_Close();
 
 #endif // __INDEX_H__
