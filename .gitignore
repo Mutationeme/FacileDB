@@ -4,6 +4,5 @@ bin
 *.code-workspace
 
 *.sh
-mema*
 
 ~$FacileDB.pptx

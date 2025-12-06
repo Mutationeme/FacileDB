@@ -46,22 +46,27 @@ typedef struct
     void *p_value;
 } FACILEDB_RECORD_T;
 
-// user input format
 typedef struct
 {
     uint32_t record_num;
     FACILEDB_RECORD_T *p_data_records;
 } FACILEDB_DATA_T;
 
+typedef struct
+{
+  uint32_t data_num;
+  FACILEDB_DATA_T *p_data_array;  
+} FACILEDB_DATA_SEARCH_RESULT_T;
+
+
 void FacileDB_Api_Init(char *p_db_directory_path);
 void FacileDB_Api_Close();
 bool FacileDB_Api_Check_Set_Exist(char *p_db_set_name);
 uint32_t FacileDB_Api_Insert_Data(char *p_db_set_name, FACILEDB_DATA_T *p_faciledb_data);
-FACILEDB_DATA_T *FacileDB_Api_Search_Equal(char *p_db_set_name, FACILEDB_RECORD_T *p_faciledb_record, uint32_t *p_faciledb_data_num);
+FACILEDB_DATA_SEARCH_RESULT_T *FacileDB_Api_Search_Equal(char *p_db_set_name, FACILEDB_RECORD_T *p_faciledb_record);
 uint32_t FacileDB_Api_Delete_Equal(char *p_db_set_name, FACILEDB_RECORD_T *p_faciledb_record);
 
-void FacileDB_Api_Free_Data_Buffer(FACILEDB_DATA_T *p_faciledb_data);
-void FacileDB_Api_Free_Record_Buffer(FACILEDB_RECORD_T *p_facilledb_record);
+void FacileDB_Api_Free_Search_Result(FACILEDB_DATA_SEARCH_RESULT_T *p_faciledb_search_result);
 
 #if ENABLE_DB_INDEX
 // p_faciledb_record: p_value and value_size could be any value.

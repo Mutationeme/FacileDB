@@ -1,6 +1,6 @@
 # Compiler and flags
 CC = clang
-CFLAGS = -I./include -I./include/util -I./include/faciledb -I./include/index -Wall -g
+CFLAGS = -I./include -I./include/util -I./include/faciledb -I./include/index -I./include/mema -Wall -g
 
 # Source and target directories
 SRCDIR = src
@@ -17,10 +17,8 @@ TEST_FACILEDB_TARGET = $(OBJDIR)/Test_Faciledb
 SRC = $(wildcard $(SRCDIR)/*.c) \
       $(wildcard $(SRCDIR)/util/*.c) \
       $(wildcard $(SRCDIR)/faciledb/*.c) \
-      $(wildcard $(SRCDIR)/index/*.c)
-
-# Filter out unfinished main
-# SRC = $(filter-out $(SRCDIR)/main.c, $(SRC_ALL))
+      $(wildcard $(SRCDIR)/index/*.c) \
+	  $(wildcard $(SRCDIR)/mema/*.c)
 
 # Object files for main target
 OBJ = $(patsubst $(SRCDIR)/%.c, $(OBJDIR)/%.o, $(SRC))

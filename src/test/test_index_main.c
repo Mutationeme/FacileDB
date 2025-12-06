@@ -99,6 +99,12 @@ void test_index_init_and_close()
     Index_Api_Init(test_index_directory);
     Index_Api_Close();
 
+    {
+        // Check
+        assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_INDEX) == 0);
+        assert(Mema_Api_Get_User_Usage_Count(MEMA_USER_INDEX) == 0);
+    }
+
     test_end(case_name);
 }
 
@@ -118,6 +124,8 @@ void test_index_insert_case1()
 
     // check
     {
+        assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_INDEX) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_INDEX) == 0);
+
         char index_file_path[INDEX_FILE_PATH_BUFFER_LENGTH] = {0};
         INDEX_INFO_T index_info;
 
@@ -155,6 +163,8 @@ void test_index_insert_case1()
         free_index_properties_resources(&expected_index_properties);
         free_index_node_resources(&index_node);
         free_index_node_resources(&expected_index_node);
+
+        assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_INDEX) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_INDEX) == 0);
     } // check
 
     test_end(case_name);
@@ -183,6 +193,8 @@ void test_index_insert_case11()
 
     // check
     {
+        assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_INDEX) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_INDEX) == 0);
+
         char test_index_file_path[INDEX_FILE_PATH_BUFFER_LENGTH] = {0};
         INDEX_INFO_T index_info;
         INDEX_PROPERTIES_T expected_index_properties;
@@ -332,6 +344,8 @@ void test_index_insert_case11()
 
         close_index_info(&index_info);
         free_index_properties_resources(&expected_index_properties);
+
+        assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_INDEX) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_INDEX) == 0);
     } // check
 
     test_end(case_name);
@@ -356,6 +370,10 @@ void test_index_key_exists()
 
     Index_Api_Close();
 
+    {
+        // check
+        assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_INDEX) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_INDEX) == 0);
+    }
     test_end(case_name);
 }
 
@@ -369,21 +387,25 @@ void test_index_search_case1()
     INDEX_ID_TYPE_E index_id_type = INDEX_ID_TYPE_UINT32;
     char payload[INDEX_PAYLOAD_SIZE / sizeof(char)] = "aaaaa";
 
-    uint32_t result_length = 0;
-    void *result = NULL;
+    INDEX_SEARCH_RESULT_T *result = NULL;
 
     Index_Api_Init(test_index_directory);
     Index_Api_Insert_Element(p_index_key, &target, index_id_type, payload, strlen(payload) * sizeof(char));
-    result = Index_Api_Search_Equal(p_index_key, &target, index_id_type, &result_length);
+    result = Index_Api_Search_Equal(p_index_key, &target, index_id_type);
     Index_Api_Close();
 
-    // check
     {
-        assert(result_length == 1);
-        assert(memcmp(payload, result, INDEX_PAYLOAD_SIZE) == 0);
-    } // check
+        // check
+        assert(result->result_length == 1);
+        assert(memcmp(payload, result->p_result_array, INDEX_PAYLOAD_SIZE) == 0);
+    }
 
     Index_Api_Free_Search_Result(result);
+
+    {
+        // check
+        assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_INDEX) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_INDEX) == 0);
+    }
 
     test_end(case_name);
 }
@@ -398,8 +420,7 @@ void test_index_search_case11()
     INDEX_ID_TYPE_E index_id_type = INDEX_ID_TYPE_UINT32;
     char payload[11][INDEX_PAYLOAD_SIZE];
 
-    void *result[6];
-    uint32_t reuslt_length[6];
+    INDEX_SEARCH_RESULT_T *search_result[6];
 
     // 11 elements
     Index_Api_Init(test_index_directory);
@@ -411,46 +432,51 @@ void test_index_search_case11()
         Index_Api_Insert_Element(p_index_key, &(target[i]), index_id_type, payload[i], strlen(payload[i]) * sizeof(char));
     }
 
-    result[0] = Index_Api_Search_Equal(p_index_key, &(target[0]), index_id_type, &(reuslt_length[0]));
-    result[1] = Index_Api_Search_Equal(p_index_key, &(target[1]), index_id_type, &(reuslt_length[1]));
-    result[2] = Index_Api_Search_Equal(p_index_key, &(target[3]), index_id_type, &(reuslt_length[2]));
-    result[3] = Index_Api_Search_Equal(p_index_key, &(target[4]), index_id_type, &(reuslt_length[3]));
-    result[4] = Index_Api_Search_Equal(p_index_key, &(target[5]), index_id_type, &(reuslt_length[4]));
-    result[5] = Index_Api_Search_Equal(p_index_key, &(target[9]), index_id_type, &(reuslt_length[5]));
+    search_result[0] = Index_Api_Search_Equal(p_index_key, &(target[0]), index_id_type);
+    search_result[1] = Index_Api_Search_Equal(p_index_key, &(target[1]), index_id_type);
+    search_result[2] = Index_Api_Search_Equal(p_index_key, &(target[3]), index_id_type);
+    search_result[3] = Index_Api_Search_Equal(p_index_key, &(target[4]), index_id_type);
+    search_result[4] = Index_Api_Search_Equal(p_index_key, &(target[5]), index_id_type);
+    search_result[5] = Index_Api_Search_Equal(p_index_key, &(target[9]), index_id_type);
 
     Index_Api_Close();
 
     // check
     {
-        assert(reuslt_length[0] == 1);
-        assert(memcmp(result[0], payload[0], INDEX_PAYLOAD_SIZE) == 0);
+        assert(search_result[0]->result_length == 1);
+        assert(memcmp(search_result[0]->p_result_array, payload[0], INDEX_PAYLOAD_SIZE) == 0);
 
         // check if result[1][0] == result[1][1] == target payload
-        assert(reuslt_length[1] == 2);
+        assert(search_result[1]->result_length == 2);
         assert(
-            (memcmp(result[1], payload[1], INDEX_PAYLOAD_SIZE) == 0 && memcmp(result[1] + INDEX_PAYLOAD_SIZE, payload[2], INDEX_PAYLOAD_SIZE) == 0) ||
-            (memcmp(result[1], payload[2], INDEX_PAYLOAD_SIZE) == 0 && memcmp(result[1] + INDEX_PAYLOAD_SIZE, payload[1], INDEX_PAYLOAD_SIZE) == 0));
+            (memcmp(search_result[1]->p_result_array, payload[1], INDEX_PAYLOAD_SIZE) == 0 && memcmp(search_result[1]->p_result_array + INDEX_PAYLOAD_SIZE, payload[2], INDEX_PAYLOAD_SIZE) == 0) ||
+            (memcmp(search_result[1]->p_result_array, payload[2], INDEX_PAYLOAD_SIZE) == 0 && memcmp(search_result[1]->p_result_array + INDEX_PAYLOAD_SIZE, payload[1], INDEX_PAYLOAD_SIZE) == 0));
 
-        assert(reuslt_length[2] == 1);
-        assert(memcmp(result[2], payload[3], INDEX_PAYLOAD_SIZE) == 0);
+        assert(search_result[2]->result_length == 1);
+        assert(memcmp(search_result[2]->p_result_array, payload[3], INDEX_PAYLOAD_SIZE) == 0);
 
-        assert(reuslt_length[3] == 1);
-        assert(memcmp(result[3], payload[4], INDEX_PAYLOAD_SIZE) == 0);
+        assert(search_result[3]->result_length == 1);
+        assert(memcmp(search_result[3]->p_result_array, payload[4], INDEX_PAYLOAD_SIZE) == 0);
 
-        assert(reuslt_length[4] == 4);
-        assert(memcmp(result[4] + INDEX_PAYLOAD_SIZE * 0, payload[5], INDEX_PAYLOAD_SIZE) == 0);
-        assert(memcmp(result[4] + INDEX_PAYLOAD_SIZE * 1, payload[6], INDEX_PAYLOAD_SIZE) == 0);
-        assert(memcmp(result[4] + INDEX_PAYLOAD_SIZE * 2, payload[7], INDEX_PAYLOAD_SIZE) == 0);
-        assert(memcmp(result[4] + INDEX_PAYLOAD_SIZE * 3, payload[8], INDEX_PAYLOAD_SIZE) == 0);
+        assert(search_result[4]->result_length == 4);
+        assert(memcmp(search_result[4]->p_result_array + INDEX_PAYLOAD_SIZE * 0, payload[5], INDEX_PAYLOAD_SIZE) == 0);
+        assert(memcmp(search_result[4]->p_result_array + INDEX_PAYLOAD_SIZE * 1, payload[6], INDEX_PAYLOAD_SIZE) == 0);
+        assert(memcmp(search_result[4]->p_result_array + INDEX_PAYLOAD_SIZE * 2, payload[7], INDEX_PAYLOAD_SIZE) == 0);
+        assert(memcmp(search_result[4]->p_result_array + INDEX_PAYLOAD_SIZE * 3, payload[8], INDEX_PAYLOAD_SIZE) == 0);
 
-        assert(reuslt_length[5] == 2);
-        assert(memcmp(result[5] + INDEX_PAYLOAD_SIZE * 0, payload[9], INDEX_PAYLOAD_SIZE) == 0);
-        assert(memcmp(result[5] + INDEX_PAYLOAD_SIZE * 1, payload[10], INDEX_PAYLOAD_SIZE) == 0);
+        assert(search_result[5]->result_length == 2);
+        assert(memcmp(search_result[5]->p_result_array + INDEX_PAYLOAD_SIZE * 0, payload[9], INDEX_PAYLOAD_SIZE) == 0);
+        assert(memcmp(search_result[5]->p_result_array + INDEX_PAYLOAD_SIZE * 1, payload[10], INDEX_PAYLOAD_SIZE) == 0);
     } // check
 
     for(uint32_t i = 0; i < 6; i++)
     {
-        Index_Api_Free_Search_Result(result[i]);
+        Index_Api_Free_Search_Result(search_result[i]);
+    }
+
+    {
+        // check
+        assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_INDEX) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_INDEX) == 0);
     }
 
     test_end(case_name);

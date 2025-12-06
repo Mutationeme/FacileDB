@@ -22,6 +22,7 @@
 #endif
 
 #include "index.h"
+#include "mema.h"
 #include "index_id_type.h"
 
 #ifndef INDEX_INFO_INSTANCE_NUM
@@ -227,6 +228,8 @@ void Index_Api_Init(char *p_index_directory_path)
     lock_index_context_sync();
     update_index_context_status(INDEX_CONTEXT_STATUS_INITIALIZING);
 
+    // Initialize memory allocator for index module.
+    Mema_Api_Init(MEMA_USER_INDEX);
     // Initialize index dorectory path.
     set_index_directory_path(temp_index_directory_path);
     // Initialize index info instances.
@@ -304,14 +307,12 @@ void Index_Api_Insert_Element(char *p_index_key, void *p_index_id, INDEX_ID_TYPE
     free_index_element_resources(&index_element);
 }
 
-// return value: result array
-// result_length: integer, number of results in result array
-void *Index_Api_Search_Equal(char *p_index_key, void *p_target_index_id, INDEX_ID_TYPE_E index_id_type, uint32_t *p_result_length)
+INDEX_SEARCH_RESULT_T *Index_Api_Search_Equal(char *p_index_key, void *p_target_index_id, INDEX_ID_TYPE_E index_id_type)
 {
     INDEX_INFO_T *p_index_info = NULL;
     uint32_t root_tag = 0;
     INDEX_ELEMENT_T target_index_element;
-    void *result = NULL;
+    INDEX_SEARCH_RESULT_T *search_result = Mema_Api_Alloc(MEMA_USER_INDEX, sizeof(INDEX_SEARCH_RESULT_T));
 
     index_element_init(&target_index_element);
     setup_index_element(&target_index_element, p_target_index_id, index_id_type, NULL, 0);
@@ -324,8 +325,9 @@ void *Index_Api_Search_Equal(char *p_index_key, void *p_target_index_id, INDEX_I
         unlock_index_context_sync();
 
         free_index_element_resources(&target_index_element);
-        *p_result_length = 0;
-        return NULL;
+        search_result->p_result_array = NULL;
+        search_result->result_length = 0;
+        return search_result;
     }
 
     p_index_info = load_and_lock_index_info(p_index_key, index_id_type);
@@ -337,7 +339,7 @@ void *Index_Api_Search_Equal(char *p_index_key, void *p_target_index_id, INDEX_I
     unlock_index_info_sync(p_index_info);
 
     root_tag = p_index_info->index_properties.root_tag;
-    result = search_index_element(p_index_info, root_tag, &target_index_element, p_result_length);
+    search_result->p_result_array = search_index_element(p_index_info, root_tag, &target_index_element, &(search_result->result_length));
 
     lock_index_info_sync(p_index_info);
     index_info_file_unlock_read(p_index_info);
@@ -347,12 +349,19 @@ void *Index_Api_Search_Equal(char *p_index_key, void *p_target_index_id, INDEX_I
 
     free_index_element_resources(&target_index_element);
 
-    return result;
+    return search_result;
 }
 
-void Index_Api_Free_Search_Result(void *p_result)
+void Index_Api_Free_Search_Result(INDEX_SEARCH_RESULT_T *p_index_search_result)
 {
-    free(p_result);
+    if(p_index_search_result != NULL)
+    {
+        if (p_index_search_result->result_length != 0 && p_index_search_result->p_result_array != NULL)
+        {
+            Mema_Api_Free(MEMA_USER_INDEX, p_index_search_result->p_result_array);
+        }
+        Mema_Api_Free(MEMA_USER_INDEX, p_index_search_result);
+    }
 }
 
 static inline void lock_index_context_sync()
@@ -576,7 +585,6 @@ void create_new_index_file_format(INDEX_INFO_T *p_index_info, uint8_t *p_key, ui
 
     allocate_index_properties_resources(p_index_properties, key_size);
 
-    p_index_properties->p_key = malloc(key_size * sizeof(uint8_t));
     memcpy(p_index_properties->p_key, p_key, key_size);
     p_index_properties->key_size = key_size;
     p_index_properties->root_tag = 0;
@@ -1157,7 +1165,7 @@ void index_properties_init(INDEX_PROPERTIES_T *p_index_properties)
 
 void allocate_index_properties_resources(INDEX_PROPERTIES_T *p_index_properties, uint32_t key_size)
 {
-    p_index_properties->p_key = malloc(key_size * sizeof(uint8_t));
+    p_index_properties->p_key = Mema_Api_Alloc(MEMA_USER_INDEX, key_size * sizeof(uint8_t));
     p_index_properties->key_size = key_size;
 }
 
@@ -1202,7 +1210,7 @@ void read_index_properties(INDEX_INFO_T *p_index_info)
     // Read key_size
     fread(&(p_index_properties->key_size), sizeof(p_index_properties->key_size), 1, p_index_file);
     // Read key
-    p_index_properties->p_key = malloc(p_index_properties->key_size);
+    p_index_properties->p_key = Mema_Api_Alloc(MEMA_USER_INDEX, p_index_properties->key_size);
     fread(p_index_properties->p_key, p_index_properties->key_size, 1, p_index_file);
 #endif // IS_POSIX_API_SUPPORT
 }
@@ -1265,7 +1273,7 @@ void free_index_properties_resources(INDEX_PROPERTIES_T *p_index_properties)
 {
     if (p_index_properties->p_key)
     {
-        free(p_index_properties->p_key);
+        Mema_Api_Free(MEMA_USER_INDEX, p_index_properties->p_key);
         p_index_properties->p_key = NULL;
     }
 }
@@ -1533,14 +1541,14 @@ void allocate_index_element_resources(INDEX_ELEMENT_T *p_index_element, uint32_t
         free_index_element_resources(p_index_element);
     }
 
-    p_index_element->p_index_id = calloc(1, index_id_size);
+    p_index_element->p_index_id = Mema_Api_Alloc(MEMA_USER_INDEX, index_id_size);
 }
 
 void free_index_element_resources(INDEX_ELEMENT_T *p_index_element)
 {
     if (p_index_element->p_index_id != NULL)
     {
-        free(p_index_element->p_index_id);
+        Mema_Api_Free(MEMA_USER_INDEX, p_index_element->p_index_id);
         p_index_element->p_index_id = NULL;
     }
 }
@@ -1551,7 +1559,7 @@ void deep_copy_index_element(INDEX_ELEMENT_T *p_dest_index_element, INDEX_ELEMEN
     uint32_t index_id_size = Index_Id_Type_Get_Size(index_id_type);
 
     free_index_element_resources(p_dest_index_element);
-    allocate_index_element_resources(p_dest_index_element, index_id_type);
+    allocate_index_element_resources(p_dest_index_element, index_id_size);
 
     memcpy(p_dest_index_element->p_index_id, p_src_index_element->p_index_id, index_id_size);
     memcpy(p_dest_index_element->index_payload, p_src_index_element->index_payload, INDEX_PAYLOAD_SIZE);
@@ -1823,6 +1831,7 @@ void insert_index_element(INDEX_INFO_T *p_index_info, uint32_t tag, INDEX_ELEMEN
 
 void *search_index_element(INDEX_INFO_T *p_index_info, uint32_t tag, INDEX_ELEMENT_T *p_target_index_element, uint32_t *result_length)
 {
+    void *p_search_result = NULL;
     INDEX_NODE_T index_node;
     index_node_init(&index_node, tag);
 
@@ -1837,15 +1846,16 @@ void *search_index_element(INDEX_INFO_T *p_index_info, uint32_t tag, INDEX_ELEME
         // non-leaf
         INDEX_ID_TYPE_E index_id_type = p_index_info->index_properties.index_id_type;
         uint32_t position = find_element_position_in_the_node(&index_node, p_target_index_element, index_id_type);
-        return search_index_element(p_index_info, index_node.child_tag[position], p_target_index_element, result_length);
+        p_search_result = search_index_element(p_index_info, index_node.child_tag[position], p_target_index_element, result_length);
     }
     else
     {
         // leaf-node
-        return search_index_element_handler(p_index_info, &index_node, p_target_index_element, result_length);
+        p_search_result = search_index_element_handler(p_index_info, &index_node, p_target_index_element, result_length);
     }
 
     free_index_node_resources(&index_node);
+    return p_search_result;
 }
 
 uint8_t *search_index_element_handler(INDEX_INFO_T *p_index_info, INDEX_NODE_T *p_index_node, INDEX_ELEMENT_T *p_target_index_element, uint32_t *result_length)
@@ -1881,12 +1891,20 @@ uint8_t *search_index_element_handler(INDEX_INFO_T *p_index_info, INDEX_NODE_T *
         {
             next_index_node_search_result = search_index_element_handler(p_index_info, &next_index_node, p_target_index_element, result_length);
             compare_equal_length += *result_length;
-            p_search_result = realloc(next_index_node_search_result, compare_equal_length * INDEX_PAYLOAD_SIZE);
-            if (p_search_result == NULL)
+
+            if(*result_length > 0)
             {
-                // allocate more memory error.
-                // Error handling: return next search result, and doesn't attach current result.
-                return next_index_node_search_result;
+                p_search_result = Mema_Api_Realloc(MEMA_USER_INDEX, next_index_node_search_result, compare_equal_length * INDEX_PAYLOAD_SIZE);
+                if (p_search_result == NULL)
+                {
+                    // allocate more memory error.
+                    // Error handling: return next search result, and doesn't attach current result.
+                    return next_index_node_search_result;
+                }
+            }
+            else
+            {
+                p_search_result = Mema_Api_Alloc(MEMA_USER_INDEX, compare_equal_length * INDEX_PAYLOAD_SIZE);
             }
             only_current_node_result = false;
         }
@@ -1908,7 +1926,7 @@ uint8_t *search_index_element_handler(INDEX_INFO_T *p_index_info, INDEX_NODE_T *
         *result_length = 0;
         if (compare_equal_length > 0)
         {
-            p_search_result = malloc(compare_equal_length * INDEX_PAYLOAD_SIZE);
+            p_search_result = Mema_Api_Alloc(MEMA_USER_INDEX, compare_equal_length * INDEX_PAYLOAD_SIZE);
             if (p_search_result == NULL)
             {
                 // Allocate memory error
