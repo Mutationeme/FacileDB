@@ -38,26 +38,9 @@ void get_test_faciledb_file_path(char *p_faciledb_file_path, char *p_db_set_name
 void check_faciledb_properties(DB_SET_PROPERTIES_T *p_db_set_properties_1, DB_SET_PROPERTIES_T *p_db_set_properties_2)
 {
     assert(p_db_set_properties_1->block_num == p_db_set_properties_2->block_num);
-    assert(p_db_set_properties_1->valid_record_num == p_db_set_properties_2->valid_record_num);
+    assert(p_db_set_properties_1->data_num == p_db_set_properties_2->data_num);
     assert(p_db_set_properties_1->set_name_size == p_db_set_properties_2->set_name_size);
     assert(memcmp(p_db_set_properties_1->p_set_name, p_db_set_properties_2->p_set_name, p_db_set_properties_1->set_name_size) == 0);
-
-#if defined(__PRINT_DETAILS__)
-    DB_SET_PROPERTIES_T *p_db_set_properties_print = p_db_set_properties_1;
-    char *p_set_name_buffer = NULL;
-
-    printf("block_num: %" PRIu64 "\n", p_db_set_properties_print->block_num);
-    printf("created_time: %" PRIu64 "\n", p_db_set_properties_print->created_time);
-    printf("modified_time: %" PRIu64 "\n", p_db_set_properties_print->modified_time);
-    printf("valid_record_num: %" PRIu64 "\n", p_db_set_properties_print->valid_record_num);
-    printf("set_name_size: %" PRIu32 "\n", p_db_set_properties_print->set_name_size);
-
-    p_set_name_buffer = calloc(p_db_set_properties_print->set_name_size + 1, sizeof(uint8_t));
-    memcpy(p_set_name_buffer, p_db_set_properties_print->p_set_name, p_db_set_properties_print->set_name_size);
-    printf("p_set_name: %s\n", p_set_name_buffer);
-
-    free(p_set_name_buffer);
-#endif
 }
 
 void check_faciledb_block(DB_BLOCK_T *p_db_block_1, DB_BLOCK_T *p_db_block_2)
@@ -217,7 +200,7 @@ void test_faciledb_insert_case1()
         // clang-format off
         DB_SET_PROPERTIES_T expect_db_set_properties = {
             .block_num = 1,
-            .valid_record_num = 1,
+            .data_num = 1,
             .set_name_size = strlen(db_set_name),
             .p_set_name = db_set_name
         };
@@ -328,7 +311,7 @@ void test_faciledb_insert_case2()
         // clang-format off
         DB_SET_PROPERTIES_T expect_db_set_properties = {
             .block_num = 1,
-            .valid_record_num = 1,
+            .data_num = 1,
             .set_name_size = strlen(db_set_name),
             .p_set_name = db_set_name
         };
@@ -466,7 +449,7 @@ void test_faciledb_insert_case4()
         DB_SET_PROPERTIES_T expect_db_set_properties = {
             // might be 3
             .block_num = 2,
-            .valid_record_num = 2,
+            .data_num = 2,
             .set_name_size = strlen(db_set_name),
             .p_set_name = db_set_name
         };
@@ -625,7 +608,7 @@ void test_faciledb_insert_case3()
         // clang-format off
         DB_SET_PROPERTIES_T expect_db_set_properties = {
             .block_num = expect_block_num,
-            .valid_record_num = 1,
+            .data_num = 1,
             .set_name_size = strlen(db_set_name),
             .p_set_name = db_set_name
         };
@@ -775,7 +758,7 @@ void test_faciledb_insert_case5()
         // clang-format off
         DB_SET_PROPERTIES_T expect_db_set_properties = {
             .block_num = 3,
-            .valid_record_num = 2,
+            .data_num = 2,
             .set_name_size = strlen(db_set_name),
             .p_set_name = db_set_name
         };

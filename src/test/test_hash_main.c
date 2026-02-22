@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <assert.h>
+#include <string.h>
 
 #include "hash.c"
 
@@ -25,7 +26,7 @@ void test_hash()
     HASH_VALUE_T expected = 0x0b886aff;
 
     // printf("0x%llx\n", result);
-    assert(Hash_Compare(result, expected) == HASH_VALUE_COMPARE_EQUAL);
+    assert(Hash_Api_Compare(result, expected) == HASH_VALUE_COMPARE_EQUAL);
 
     test_end(case_name);
 }

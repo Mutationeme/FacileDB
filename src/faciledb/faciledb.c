@@ -84,7 +84,6 @@ typedef struct
     void *p_value;
 } DB_RECORD_T;
 
-// in-memory structure
 typedef struct
 {
     DB_RECORD_PROPERTIES_T db_record_properties;
@@ -127,22 +126,36 @@ typedef struct
     uint64_t modified_time;
     uint32_t deleted;
     uint32_t valid_record_num;      // data based
-    uint32_t record_properties_num; // numbers of record in the data block
+    uint32_t record_properties_num; // TODO: crc
 
-    uint8_t block_data[FACILEDB_BLOCK_DATA_SIZE]; // contains lots of db records.
+    uint8_t block_data[FACILEDB_BLOCK_DATA_SIZE]; // store db_records.
 } DB_BLOCK_T;
+
+typedef struct DB_BLOCK_LIST_NODE_T
+{
+    DB_BLOCK_T db_block;
+    struct DB_BLOCK_LIST_NODE_T *p_prev;
+    struct DB_BLOCK_LIST_NODE_T *p_next;
+} DB_BLOCK_LIST_NODE_T;
+
+typedef struct DB_BLOCK_LIST_ENTRY_T
+{
+    uint32_t list_length;
+    DB_BLOCK_LIST_NODE_T *p_head;
+    DB_BLOCK_LIST_NODE_T *p_tail;
+} DB_BLOCK_LIST_ENTRY_T;
 
 typedef struct
 {
     uint64_t block_num;
     uint64_t created_time;
     uint64_t modified_time;
-    uint64_t valid_record_num;
+    uint64_t data_num;
+    // uint32_t db_set_properties_crc32_value; // TODO
     uint32_t set_name_size;
     void *p_set_name;
 } DB_SET_PROPERTIES_T;
 
-// in-memory structure
 typedef struct
 {
 #if IS_POSIX_API_SUPPORT
@@ -173,7 +186,6 @@ typedef struct
     DB_CONTEXT_STATUS_E status; // TODO: move status to DB_CONTEXT_T
 } DB_CONTEXT_SYNC_T;
 
-// TODO: using context
 typedef struct
 {
     DB_CONTEXT_SYNC_T db_context_sync;
@@ -248,7 +260,6 @@ bool allocate_db_set_properties_resources(DB_SET_PROPERTIES_T *p_db_set_properti
 void free_db_set_properties_resources(DB_SET_PROPERTIES_T *p_db_set_properties);
 void write_db_set_properties(DB_SET_INFO_T *p_db_set_info);
 void read_db_set_properties(DB_SET_INFO_T *p_db_set_info);
-static inline uint64_t add_db_set_properties_valid_record_num(DB_SET_PROPERTIES_T *p_db_set_properties);
 
 void db_block_init(DB_BLOCK_T *p_db_block);
 off_t get_db_block_offset(DB_SET_PROPERTIES_T *p_db_set_properties, uint64_t block_tag);
@@ -256,7 +267,9 @@ size_t get_db_block_size();
 void write_db_block(DB_BLOCK_T *p_db_block, DB_SET_INFO_T *p_db_set_info);
 void read_db_block(DB_SET_INFO_T *p_db_set_info, uint64_t block_tag, DB_BLOCK_T *p_db_block);
 void read_db_block_attributes(DB_SET_INFO_T *p_db_set_info, uint64_t block_tag, DB_BLOCK_T *p_db_block);
-void update_db_block_next_block_tag(uint64_t block_tag, uint64_t next_block_tag, DB_SET_INFO_T *p_db_set_info);
+void db_block_list_entry_init(DB_BLOCK_LIST_ENTRY_T *p_entry);
+void db_block_list_node_init(DB_BLOCK_LIST_NODE_T *p_node);
+void append_db_block_list_node_to_tail(DB_BLOCK_LIST_ENTRY_T *p_entry, DB_BLOCK_LIST_NODE_T *p_node);
 
 void db_record_info_init(DB_RECORD_INFO_T *p_db_record_info);
 bool allocate_db_record_info_resources(DB_RECORD_INFO_T *p_db_record_info);
@@ -283,8 +296,10 @@ void free_db_record_resources(DB_RECORD_T *p_db_record);
 
 uint32_t insert_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_T *p_db_data_info, uint64_t data_tag);
 void search_db_data_sequential(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_target_db_record_info, FACILEDB_RECORD_VALUE_TYPE_COMPARE_RESULT_E compare_type, DB_DATA_INFO_LIST_ENTRY_T *p_result_db_data_info_list_entry);
-uint64_t insert_db_data_handler_write_new_db_block(DB_BLOCK_T *p_db_block, DB_SET_INFO_T *p_db_set_info);
-void insert_db_data_handler_assign_db_block_value(DB_BLOCK_T *p_db_block, uint64_t prev_block_tag, uint32_t valid_record_num, uint64_t data_tag);
+uint32_t insert_db_data_handler_write_db_block_list(DB_SET_INFO_T *p_db_set_info, DB_BLOCK_LIST_ENTRY_T *p_db_block_list_entry);
+void insert_db_data_handler_assign_block_value(DB_BLOCK_T *p_db_block, DB_SET_INFO_T *p_info, uint32_t valid_record_num, uint64_t data_tag);
+void insert_db_data_handler_assign_prev_next_block_tag(DB_BLOCK_LIST_ENTRY_T *p_entry, DB_BLOCK_LIST_NODE_T *p_node);
+void insert_db_data_handler_free_db_block_list(DB_BLOCK_LIST_ENTRY_T *p_db_block_list_entry);
 void search_db_data(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_target_db_record_info, FACILEDB_RECORD_VALUE_TYPE_COMPARE_RESULT_E compare_type, DB_DATA_INFO_LIST_ENTRY_T *p_result_db_data_info_list_entry);
 void delete_db_data_handler_write_delete_flag(DB_SET_INFO_T *p_db_set_info, uint64_t db_block_tag, uint32_t deleted);
 void delete_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_LIST_ENTRY_T *p_db_data_info_list_entry);
@@ -408,20 +423,20 @@ uint32_t FacileDB_Api_Insert_Data(char *p_db_set_name, FACILEDB_DATA_T *p_facile
     db_set_info_file_lock_write(p_db_set_info);
     unlock_db_set_info_sync(p_db_set_info);
 
-    data_tag = add_db_set_properties_valid_record_num(&(p_db_set_info->db_set_properties));
+    // read db_set_properties from disk to ensure data consistency
+    // TODO: mmap (?)
+
+    data_tag = ++(p_db_set_info->db_set_properties.data_num);
     insert_db_data(p_db_set_info, &db_data_info, data_tag);
 
-    // write due to add valid record number.
-    // TODO: update when close operation.
+    // write db_set_properties fields into disk
     write_db_set_properties(p_db_set_info);
 
-    // start of sync
     lock_db_set_info_sync(p_db_set_info);
     db_set_info_file_unlock_write(p_db_set_info);
     update_db_set_info_status(p_db_set_info, DB_SET_INFO_STATUS_READY);
     db_set_info_sync_write_unblock(p_db_set_info);
     unlock_db_set_info_sync(p_db_set_info);
-    // end of sync
 
     // free dynamic resources allocated at shallow_assign_faciledb_data_to_db_data_info.
     Mema_Api_Free(MEMA_USER_FACILEDB, db_data_info.p_db_record_info);
@@ -934,6 +949,7 @@ DB_SET_INFO_T *load_and_lock_db_set_info(char *p_db_set_name)
 
         if (timeout)
         {
+            // TODO: error handling
             assert(0);
         }
     }
@@ -1411,7 +1427,7 @@ void db_set_properties_init(DB_SET_PROPERTIES_T *p_db_set_properties)
     p_db_set_properties->block_num = 0;
     p_db_set_properties->created_time = 0;
     p_db_set_properties->modified_time = 0;
-    p_db_set_properties->valid_record_num = 0;
+    p_db_set_properties->data_num = 0;
     p_db_set_properties->set_name_size = 0;
 
     p_db_set_properties->p_set_name = NULL;
@@ -1422,7 +1438,7 @@ size_t get_db_set_properties_size(DB_SET_PROPERTIES_T *p_db_set_properties)
     size_t set_properties_size = 0;
 
     // static variable
-    set_properties_size = sizeof(p_db_set_properties->block_num) + sizeof(p_db_set_properties->created_time) + sizeof(p_db_set_properties->modified_time) + sizeof(p_db_set_properties->valid_record_num) + sizeof(p_db_set_properties->set_name_size);
+    set_properties_size = sizeof(p_db_set_properties->block_num) + sizeof(p_db_set_properties->created_time) + sizeof(p_db_set_properties->modified_time) + sizeof(p_db_set_properties->data_num) + sizeof(p_db_set_properties->set_name_size);
     // dynamic variables
     set_properties_size += p_db_set_properties->set_name_size;
 
@@ -1472,13 +1488,16 @@ void write_db_set_properties(DB_SET_INFO_T *p_db_set_info)
     offset += sizeof(p_db_set_properties->created_time);
     pwrite(fd, &(p_db_set_properties->modified_time), sizeof(p_db_set_properties->modified_time), offset);
     offset += sizeof(p_db_set_properties->modified_time);
-    pwrite(fd, &(p_db_set_properties->valid_record_num), sizeof(p_db_set_properties->valid_record_num), offset);
-    offset += sizeof(p_db_set_properties->valid_record_num);
+    pwrite(fd, &(p_db_set_properties->data_num), sizeof(p_db_set_properties->data_num), offset);
+    offset += sizeof(p_db_set_properties->data_num);
     pwrite(fd, &(p_db_set_properties->set_name_size), sizeof(p_db_set_properties->set_name_size), offset);
     offset += sizeof(p_db_set_properties->set_name_size);
 
     // write dynamic variables
     pwrite(fd, p_db_set_properties->p_set_name, p_db_set_properties->set_name_size, offset);
+
+    // ensure data is written to disk
+    fsync(fd);
 #else  // IS_POSIX_API_SUPPORT
     fseek(p_db_set_file, 0, SEEK_SET);
 
@@ -1486,7 +1505,7 @@ void write_db_set_properties(DB_SET_INFO_T *p_db_set_info)
     fwrite(&(p_db_set_properties->block_num), sizeof(p_db_set_properties->block_num), 1, p_db_set_file);
     fwrite(&(p_db_set_properties->created_time), sizeof(p_db_set_properties->created_time), 1, p_db_set_file);
     fwrite(&(p_db_set_properties->modified_time), sizeof(p_db_set_properties->modified_time), 1, p_db_set_file);
-    fwrite(&(p_db_set_properties->valid_record_num), sizeof(p_db_set_properties->valid_record_num), 1, p_db_set_file);
+    fwrite(&(p_db_set_properties->data_num), sizeof(p_db_set_properties->data_num), 1, p_db_set_file);
     fwrite(&(p_db_set_properties->set_name_size), sizeof(p_db_set_properties->set_name_size), 1, p_db_set_file);
 
     // write dynamic variables
@@ -1512,8 +1531,8 @@ void read_db_set_properties(DB_SET_INFO_T *p_db_set_info)
     offset += sizeof(p_db_set_properties->created_time);
     pread(fd, &(p_db_set_properties->modified_time), sizeof(p_db_set_properties->modified_time), offset);
     offset += sizeof(p_db_set_properties->modified_time);
-    pread(fd, &(p_db_set_properties->valid_record_num), sizeof(p_db_set_properties->valid_record_num), offset);
-    offset += sizeof(p_db_set_properties->valid_record_num);
+    pread(fd, &(p_db_set_properties->data_num), sizeof(p_db_set_properties->data_num), offset);
+    offset += sizeof(p_db_set_properties->data_num);
     pread(fd, &(p_db_set_properties->set_name_size), sizeof(p_db_set_properties->set_name_size), offset);
     offset += sizeof(p_db_set_properties->set_name_size);
 
@@ -1527,20 +1546,13 @@ void read_db_set_properties(DB_SET_INFO_T *p_db_set_info)
     fread(&(p_db_set_properties->block_num), sizeof(p_db_set_properties->block_num), 1, p_db_set_file);
     fread(&(p_db_set_properties->created_time), sizeof(p_db_set_properties->created_time), 1, p_db_set_file);
     fread(&(p_db_set_properties->modified_time), sizeof(p_db_set_properties->modified_time), 1, p_db_set_file);
-    fread(&(p_db_set_properties->valid_record_num), sizeof(p_db_set_properties->valid_record_num), 1, p_db_set_file);
+    fread(&(p_db_set_properties->data_num), sizeof(p_db_set_properties->data_num), 1, p_db_set_file);
     fread(&(p_db_set_properties->set_name_size), sizeof(p_db_set_properties->set_name_size), 1, p_db_set_file);
 
     // allocate dynamic variable buffer and read dynamic variables from file
     allocate_db_set_properties_resources(p_db_set_properties, p_db_set_properties->set_name_size);
     fread(p_db_set_properties->p_set_name, p_db_set_properties->set_name_size, 1, p_db_set_file);
 #endif // IS_POSIX_API_SUPPORT
-}
-
-// return the updated value
-static inline uint64_t add_db_set_properties_valid_record_num(DB_SET_PROPERTIES_T *p_db_set_properties)
-{
-    // add and return the added value.
-    return ++(p_db_set_properties->valid_record_num);
 }
 
 void db_block_init(DB_BLOCK_T *p_db_block)
@@ -1618,6 +1630,10 @@ void write_db_block(DB_BLOCK_T *p_db_block, DB_SET_INFO_T *p_db_set_info)
         block_offset += sizeof(p_db_block->record_properties_num);
         pwrite(fd, p_db_block->block_data, sizeof(p_db_block->block_data), block_offset);
     }
+
+    // ensure data is written to disk
+    fsync(fd);
+
 #else  // IS_POSIX_API_SUPPORT
     fseek(p_db_set_file, block_offset, SEEK_SET);
 
@@ -1744,23 +1760,6 @@ void read_db_block_attributes(DB_SET_INFO_T *p_db_set_info, uint64_t block_tag, 
     fread(&(p_db_block->valid_record_num), sizeof(p_db_block->valid_record_num), 1, p_db_set_file);
     fread(&(p_db_block->record_properties_num), sizeof(p_db_block->record_properties_num), 1, p_db_set_file);
 #endif // IS_POSIX_API_SUPPORT
-}
-
-// traverse backward
-void update_db_block_next_block_tag(uint64_t block_tag, uint64_t next_block_tag, DB_SET_INFO_T *p_db_set_info)
-{
-    DB_BLOCK_T db_block;
-    db_block_init(&db_block);
-
-    read_db_block(p_db_set_info, block_tag, &db_block);
-    db_block.next_block_tag = next_block_tag;
-    // TODO: only write the next_block_tag value
-    write_db_block(&db_block, p_db_set_info);
-
-    if (db_block.prev_block_tag != 0)
-    {
-        update_db_block_next_block_tag(db_block.prev_block_tag, block_tag, p_db_set_info);
-    }
 }
 
 void extract_db_data_info_from_db_blocks_handler_update_time(DB_DATA_INFO_T *p_db_data_info, DB_BLOCK_T *p_db_block)
@@ -2126,6 +2125,39 @@ DB_RECORD_INFO_T *extract_db_record_info_from_db_blocks(uint64_t block_tag, DB_S
     return result;
 }
 
+void db_block_list_entry_init(DB_BLOCK_LIST_ENTRY_T *p_entry)
+{
+    p_entry->p_head = NULL;
+    p_entry->p_tail = NULL;
+    p_entry->list_length = 0;
+}
+
+void db_block_list_node_init(DB_BLOCK_LIST_NODE_T *p_node)
+{
+    db_block_init(&(p_node->db_block));
+    p_node->p_prev = NULL;
+    p_node->p_next = NULL;
+}
+
+void append_db_block_list_node_to_tail(DB_BLOCK_LIST_ENTRY_T *p_entry, DB_BLOCK_LIST_NODE_T *p_node)
+{
+    if (p_entry->p_head == NULL)
+    {
+        assert(p_entry->p_tail == NULL);
+        p_entry->p_head = p_node;
+        p_entry->p_tail = p_node;
+    }
+    else
+    {
+        assert(p_entry->p_tail != NULL);
+        p_entry->p_tail->p_next = p_node;
+        p_node->p_prev = p_entry->p_tail;
+        p_entry->p_tail = p_node;
+    }
+
+    p_entry->list_length++;
+}
+
 void db_record_properties_init(DB_RECORD_PROPERTIES_T *p_db_record_properties)
 {
     p_db_record_properties->deleted = 0;
@@ -2390,16 +2422,20 @@ void shallow_assign_db_record_info_to_faciledb_record(FACILEDB_RECORD_T *p_facil
 // return value: the number of inserted data.
 uint32_t insert_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_T *p_db_data_info, uint64_t data_tag)
 {
-    DB_BLOCK_T new_db_block;
-    uint8_t *p_db_block_write = new_db_block.block_data;
-    uint8_t *p_db_block_end = new_db_block.block_data + FACILEDB_BLOCK_DATA_SIZE;
-    size_t db_record_properties_size = get_db_record_properties_size();
-    uint64_t first_db_block_tag = 0;
-    uint64_t last_db_block_tag = 0;
+    DB_BLOCK_LIST_ENTRY_T db_block_list_entry;
+    DB_BLOCK_LIST_NODE_T *p_db_block_list_node = NULL;
+    DB_BLOCK_T *p_db_block = NULL;
+    uint8_t *p_db_block_write = NULL;
+    uint8_t *p_db_block_end = NULL;
+    const size_t db_record_properties_size = get_db_record_properties_size();
 
-    db_block_init(&new_db_block);
-    // Set first block prev/next block tag as 0.
-    insert_db_data_handler_assign_db_block_value(&new_db_block, 0, p_db_data_info->record_num, data_tag);
+    db_block_list_entry_init(&db_block_list_entry);
+    p_db_block_list_node = Mema_Api_Alloc(MEMA_USER_FACILEDB, sizeof(DB_BLOCK_LIST_NODE_T));
+    db_block_list_node_init(p_db_block_list_node);
+    p_db_block = &(p_db_block_list_node->db_block);
+    p_db_block_write = p_db_block->block_data;
+    p_db_block_end = p_db_block_write + FACILEDB_BLOCK_DATA_SIZE;
+
     for (uint32_t i = 0; i < (p_db_data_info->record_num); i++)
     {
         uint32_t remaining_size = 0;
@@ -2407,25 +2443,23 @@ uint32_t insert_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_T *p_db_data_
 
         if ((p_db_block_write + db_record_properties_size) > p_db_block_end)
         {
-            // new_db_block is full, write new_db_block into file.
-            uint64_t write_block_tag = insert_db_data_handler_write_new_db_block(&new_db_block, p_db_set_info);
-            if (first_db_block_tag == 0)
-            {
-                // first block tag is not set, assign it.
-                first_db_block_tag = write_block_tag;
-            }
+            // Current db_block is full, append db_block_list_node into the end of the list.
+            insert_db_data_handler_assign_block_value(p_db_block, p_db_set_info, p_db_data_info->record_num, data_tag);
+            insert_db_data_handler_assign_prev_next_block_tag(&db_block_list_entry, p_db_block_list_node);
+            append_db_block_list_node_to_tail(&db_block_list_entry, p_db_block_list_node);
 
-            // Clear and reassgin the new_block and local variables for new data.
-            db_block_init(&new_db_block);
-            insert_db_data_handler_assign_db_block_value(&new_db_block, write_block_tag, p_db_data_info->record_num, data_tag);
-            // update local variables.
-            p_db_block_write = new_db_block.block_data;
-            p_db_block_end = new_db_block.block_data + FACILEDB_BLOCK_DATA_SIZE;
+            // assign new block list node for next block
+            p_db_block_list_node = Mema_Api_Alloc(MEMA_USER_FACILEDB, sizeof(DB_BLOCK_LIST_NODE_T));
+            db_block_list_node_init(p_db_block_list_node);
+            // assign local variables
+            p_db_block = &(p_db_block_list_node->db_block);
+            p_db_block_write = p_db_block->block_data;
+            p_db_block_end = p_db_block_write + FACILEDB_BLOCK_DATA_SIZE;
         }
 
         // copy record properties to block data.
         memcpy(p_db_block_write, &(p_current_db_record_info->db_record_properties), db_record_properties_size);
-        new_db_block.record_properties_num++;
+        p_db_block->record_properties_num++;
         p_db_block_write += db_record_properties_size;
 
         // copy record key to block data.
@@ -2440,18 +2474,18 @@ uint32_t insert_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_T *p_db_data_
 
             if (copy_size == 0)
             {
-                // Current db_block is full, write db_block into file.
-                uint64_t write_block_tag = insert_db_data_handler_write_new_db_block(&new_db_block, p_db_set_info);
-                if (first_db_block_tag == 0)
-                {
-                    first_db_block_tag = write_block_tag;
-                }
+                // Current db_block is full, append db_block_list_node into the end of the list.
+                insert_db_data_handler_assign_block_value(p_db_block, p_db_set_info, p_db_data_info->record_num, data_tag);
+                insert_db_data_handler_assign_prev_next_block_tag(&db_block_list_entry, p_db_block_list_node);
+                append_db_block_list_node_to_tail(&db_block_list_entry, p_db_block_list_node);
 
-                // Clear and reassign the current block data and local variables for new data.
-                db_block_init(&new_db_block);
-                insert_db_data_handler_assign_db_block_value(&new_db_block, write_block_tag, p_db_data_info->record_num, data_tag);
-                p_db_block_write = new_db_block.block_data;
-                p_db_block_end = new_db_block.block_data + FACILEDB_BLOCK_DATA_SIZE;
+                // assign new block list node for next block
+                p_db_block_list_node = Mema_Api_Alloc(MEMA_USER_FACILEDB, sizeof(DB_BLOCK_LIST_NODE_T));
+                db_block_list_node_init(p_db_block_list_node);
+                // assign local variables
+                p_db_block = &(p_db_block_list_node->db_block);
+                p_db_block_write = p_db_block->block_data;
+                p_db_block_end = p_db_block_write + FACILEDB_BLOCK_DATA_SIZE;
 
                 continue;
             }
@@ -2474,19 +2508,18 @@ uint32_t insert_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_T *p_db_data_
 
             if (copy_size == 0)
             {
-                // block is full, write into file and clear the current block and pointer for new data.
-                uint64_t write_block_tag = insert_db_data_handler_write_new_db_block(&new_db_block, p_db_set_info);
-                if (first_db_block_tag == 0)
-                {
-                    first_db_block_tag = write_block_tag;
-                }
+                // Current db_block is full, append db_block_list_node into the end of the list.
+                insert_db_data_handler_assign_block_value(p_db_block, p_db_set_info, p_db_data_info->record_num, data_tag);
+                insert_db_data_handler_assign_prev_next_block_tag(&db_block_list_entry, p_db_block_list_node);
+                append_db_block_list_node_to_tail(&db_block_list_entry, p_db_block_list_node);
 
-                // Clear and reassign the current block data and local variables for new data.
-                db_block_init(&new_db_block);
-                insert_db_data_handler_assign_db_block_value(&new_db_block, write_block_tag, p_db_data_info->record_num, data_tag);
-                // update local variables / pointers
-                p_db_block_write = new_db_block.block_data;
-                p_db_block_end = new_db_block.block_data + FACILEDB_BLOCK_DATA_SIZE;
+                // assign new block list node for next block
+                p_db_block_list_node = Mema_Api_Alloc(MEMA_USER_FACILEDB, sizeof(DB_BLOCK_LIST_NODE_T));
+                db_block_list_node_init(p_db_block_list_node);
+                // assign local variables
+                p_db_block = &(p_db_block_list_node->db_block);
+                p_db_block_write = p_db_block->block_data;
+                p_db_block_end = p_db_block_write + FACILEDB_BLOCK_DATA_SIZE;
 
                 continue;
             }
@@ -2498,29 +2531,32 @@ uint32_t insert_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_T *p_db_data_
         }
     }
 
-    // write the last db_block
-    last_db_block_tag = insert_db_data_handler_write_new_db_block(&new_db_block, p_db_set_info);
-    if (first_db_block_tag == 0)
-    {
-        first_db_block_tag = last_db_block_tag;
-    }
+    // Append the last db_block_list_node into the end of the list.
+    insert_db_data_handler_assign_block_value(p_db_block, p_db_set_info, p_db_data_info->record_num, data_tag);
+    insert_db_data_handler_assign_prev_next_block_tag(&db_block_list_entry, p_db_block_list_node);
+    append_db_block_list_node_to_tail(&db_block_list_entry, p_db_block_list_node);
 
-    // recurssively update the next block tag of each db blocks.
-    update_db_block_next_block_tag(last_db_block_tag, 0, p_db_set_info);
+    // update the modified time of the db_set_properties
+    p_db_set_info->db_set_properties.modified_time = db_block_list_entry.p_tail->db_block.modified_time;
+    // write the db block list into file.
+    insert_db_data_handler_write_db_block_list(p_db_set_info, &db_block_list_entry);
+    write_db_set_properties(p_db_set_info);
 
 #if ENABLE_DB_INDEX
     // insert index if existed
+    uint64_t first_db_block_tag = db_block_list_entry.p_head->db_block.block_tag;
     for (uint32_t i = 0; i < (p_db_data_info->record_num); i++)
     {
         DB_RECORD_INFO_T *p_current_db_record_info = &p_db_data_info->p_db_record_info[i];
         char *p_index_key = set_db_index_key(p_db_set_info->db_set_properties.p_set_name, p_db_set_info->db_set_properties.set_name_size, p_current_db_record_info->db_record.p_key, p_current_db_record_info->db_record_properties.key_size);
-        DB_INDEX_PAYLOAD_T db_index_payload = {
-            .data_tag = data_tag,
-            .start_db_block_tag = first_db_block_tag};
 
         // If p_key index has been created, insert new index element.
         if (Index_Api_Index_Key_Exist(p_index_key))
         {
+            DB_INDEX_PAYLOAD_T db_index_payload = {
+                .data_tag = data_tag,
+                .start_db_block_tag = first_db_block_tag};
+
             insert_db_record_index(p_db_set_info, p_current_db_record_info, &db_index_payload);
         }
 
@@ -2528,42 +2564,68 @@ uint32_t insert_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_T *p_db_data_
     }
 #endif
 
-    // free db block resources if needed.
-    // currently there is no dynamic resources in db block structure.
+    // free db block list
+    insert_db_data_handler_free_db_block_list(&db_block_list_entry);
 
     // return the number of inserted data.
     return 1;
 }
 
-// return value: new block_tag
-uint64_t insert_db_data_handler_write_new_db_block(DB_BLOCK_T *p_db_block, DB_SET_INFO_T *p_db_set_info)
+// return value: number of written db blocks
+uint32_t insert_db_data_handler_write_db_block_list(DB_SET_INFO_T *p_db_set_info, DB_BLOCK_LIST_ENTRY_T *p_db_block_list_entry)
 {
-    uint64_t block_tag = 0;
-    uint64_t current_time = 0;
+    DB_BLOCK_LIST_NODE_T *p_current_node = p_db_block_list_entry->p_head;
+    uint32_t block_num;
 
-    p_db_set_info->db_set_properties.block_num++;
-    block_tag = p_db_set_info->db_set_properties.block_num;
-    p_db_block->block_tag = block_tag;
+    for (block_num = 0; block_num < p_db_block_list_entry->list_length; block_num++)
+    {
+        write_db_block(&(p_current_node->db_block), p_db_set_info);
+        p_current_node = p_current_node->p_next;
+    }
 
-    current_time = (uint64_t)get_current_time();
-    p_db_block->created_time = current_time;
-    p_db_block->modified_time = current_time;
-    // update db_set_properties time records
-    p_db_set_info->db_set_properties.modified_time = current_time;
-
-    write_db_block(p_db_block, p_db_set_info);
-
-    return block_tag;
+    return block_num;
 }
 
-void insert_db_data_handler_assign_db_block_value(DB_BLOCK_T *p_db_block, uint64_t prev_block_tag, uint32_t valid_record_num, uint64_t data_tag)
+void insert_db_data_handler_assign_block_value(DB_BLOCK_T *p_db_block, DB_SET_INFO_T *p_info, uint32_t valid_record_num, uint64_t data_tag)
 {
+    uint64_t current_time = (uint64_t)get_current_time();
+
+    p_db_block->block_tag = ++(p_info->db_set_properties.block_num);
     p_db_block->data_tag = data_tag;
-    p_db_block->prev_block_tag = prev_block_tag;
-    p_db_block->next_block_tag = 0;
     p_db_block->deleted = 0;
-    p_db_block->record_properties_num = 0;
+    // p_db_block->record_properties_num = 0;
     p_db_block->valid_record_num = valid_record_num;
+    p_db_block->created_time = current_time;
+    p_db_block->modified_time = current_time;
+}
+
+void insert_db_data_handler_assign_prev_next_block_tag(DB_BLOCK_LIST_ENTRY_T *p_entry, DB_BLOCK_LIST_NODE_T *p_node)
+{
+    // update the next block tag of the last block in the list and the prev block tag of the current block if exists.
+    if (p_entry->p_tail != NULL)
+    {
+        p_entry->p_tail->db_block.next_block_tag = p_node->db_block.block_tag;
+        p_node->db_block.prev_block_tag = p_entry->p_tail->db_block.block_tag;
+    }
+
+    p_node->db_block.next_block_tag = 0;
+}
+
+void insert_db_data_handler_free_db_block_list(DB_BLOCK_LIST_ENTRY_T *p_db_block_list_entry)
+{
+    DB_BLOCK_LIST_NODE_T *p_current_node = p_db_block_list_entry->p_head;
+    DB_BLOCK_LIST_NODE_T *p_next_node = NULL;
+
+    for (uint32_t list_length = p_db_block_list_entry->list_length; list_length > 0; list_length--)
+    {
+        p_next_node = p_current_node->p_next;
+        Mema_Api_Free(MEMA_USER_FACILEDB, p_current_node);
+        p_current_node = p_next_node;
+    }
+
+    p_db_block_list_entry->list_length = 0;
+    p_db_block_list_entry->p_head = NULL;
+    p_db_block_list_entry->p_tail = NULL;
 }
 
 // return value: DB_DATA_INFO_T array whose length is *p_result_db_data_info_num
