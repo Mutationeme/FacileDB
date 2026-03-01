@@ -51,7 +51,6 @@ void check_faciledb_block(DB_BLOCK_T *p_db_block_1, DB_BLOCK_T *p_db_block_2)
     assert(p_db_block_1->next_block_tag == p_db_block_2->next_block_tag);
     assert(p_db_block_1->deleted == p_db_block_2->deleted);
     assert(p_db_block_1->valid_record_num == p_db_block_2->valid_record_num);
-    assert(p_db_block_1->record_properties_num == p_db_block_2->record_properties_num);
 
     // assert(memcmp(p_db_block_1->block_data, p_db_block_2->block_data, FACILEDB_BLOCK_DATA_SIZE) == 0);
 
@@ -65,7 +64,6 @@ void check_faciledb_block(DB_BLOCK_T *p_db_block_1, DB_BLOCK_T *p_db_block_2)
     printf("modified_time: %" PRIu64 "\n", p_db_block_print->modified_time);
     printf("deleted: %" PRIu32 "\n", p_db_block_print->deleted);
     printf("valid_record_num: %" PRIu32 "\n", p_db_block_print->valid_record_num);
-    printf("record_properties_number: %" PRIu32 "\n", p_db_block_print->record_properties_num);
 #endif
 }
 
@@ -217,7 +215,6 @@ void test_faciledb_insert_case1()
             .next_block_tag = 0,
             .deleted = 0,
             .valid_record_num = 1,
-            .record_properties_num = 1
         };
         // clang-format on
         // block_data and memcpy()
@@ -328,7 +325,6 @@ void test_faciledb_insert_case2()
             .next_block_tag = 0,
             .deleted = 0,
             .valid_record_num = 1,
-            .record_properties_num = 1
         };
         // clang-format on
         // block_data
@@ -468,7 +464,6 @@ void test_faciledb_insert_case4()
                 .next_block_tag = 0,
                 .deleted = 0,
                 .valid_record_num = 1,
-                .record_properties_num = 1
             },
             {
                 // [1]
@@ -478,7 +473,6 @@ void test_faciledb_insert_case4()
                 .next_block_tag = 0,
                 .deleted = 0,
                 .valid_record_num = 2,
-                .record_properties_num = 2
             }
         };
         // block_data
@@ -626,7 +620,6 @@ void test_faciledb_insert_case3()
                 .next_block_tag = 2,
                 .deleted = 0,
                 .valid_record_num = 1,
-                .record_properties_num = 1
             },
             {
                 .block_tag = 2,
@@ -635,7 +628,6 @@ void test_faciledb_insert_case3()
                 .next_block_tag = 0,
                 .deleted = 0,
                 .valid_record_num = 1,
-                .record_properties_num = 0
             }
         };
         // clang-format on
@@ -777,7 +769,6 @@ void test_faciledb_insert_case5()
                 .next_block_tag = 2,
                 .deleted = 0,
                 .valid_record_num = 1,
-                .record_properties_num = 1
             },
             {
                 // [1]
@@ -787,7 +778,6 @@ void test_faciledb_insert_case5()
                 .next_block_tag = 0,
                 .deleted = 0,
                 .valid_record_num = 1,
-                .record_properties_num = 0
             },
             {
                 // [2]
@@ -797,7 +787,6 @@ void test_faciledb_insert_case5()
                 .next_block_tag = 0,
                 .deleted = 0,
                 .valid_record_num = 2,
-                .record_properties_num = 2
             }
         };
         // block_data
