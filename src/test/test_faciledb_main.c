@@ -39,8 +39,12 @@ void check_faciledb_properties(DB_SET_PROPERTIES_T *p_db_set_properties_1, DB_SE
 {
     assert(p_db_set_properties_1->block_num == p_db_set_properties_2->block_num);
     assert(p_db_set_properties_1->data_num == p_db_set_properties_2->data_num);
-    assert(p_db_set_properties_1->set_name_size == p_db_set_properties_2->set_name_size);
-    assert(memcmp(p_db_set_properties_1->p_set_name, p_db_set_properties_2->p_set_name, p_db_set_properties_1->set_name_size) == 0);
+}
+
+void check_faciledb_set_name(DB_SET_INFO_T *p_db_set_info_1, DB_SET_INFO_T *p_db_set_info_2)
+{
+    assert(p_db_set_info_1->set_name_size == p_db_set_info_2->set_name_size);
+    assert(memcmp(p_db_set_info_1->p_set_name, p_db_set_info_2->p_set_name, p_db_set_info_1->set_name_size) == 0);
 }
 
 void check_faciledb_block(DB_BLOCK_T *p_db_block_1, DB_BLOCK_T *p_db_block_2)
@@ -53,18 +57,6 @@ void check_faciledb_block(DB_BLOCK_T *p_db_block_1, DB_BLOCK_T *p_db_block_2)
     assert(p_db_block_1->valid_record_num == p_db_block_2->valid_record_num);
 
     // assert(memcmp(p_db_block_1->block_data, p_db_block_2->block_data, FACILEDB_BLOCK_DATA_SIZE) == 0);
-
-#if defined(__PRINT_DETAILS__)
-    DB_BLOCK_T *p_db_block_print = p_db_block_1;
-    printf("block_tag: %" PRIu64 "\n", p_db_block_print->block_tag);
-    printf("data_tag: %" PRId64 "\n", p_db_block_print->data_tag);
-    printf("prev_block_tag: %" PRIu64 "\n", p_db_block_print->prev_block_tag);
-    printf("next_block_tag: %" PRIu64 "\n", p_db_block_print->next_block_tag);
-    printf("created_time: %" PRIu64 "\n", p_db_block_print->created_time);
-    printf("modified_time: %" PRIu64 "\n", p_db_block_print->modified_time);
-    printf("deleted: %" PRIu32 "\n", p_db_block_print->deleted);
-    printf("valid_record_num: %" PRIu32 "\n", p_db_block_print->valid_record_num);
-#endif
 }
 
 void check_faciledb_records(DB_RECORD_INFO_T *p_db_record_info_1, uint32_t db_record_length_1, DB_RECORD_INFO_T *p_db_record_info_2, uint32_t db_record_length_2)
@@ -81,30 +73,6 @@ void check_faciledb_records(DB_RECORD_INFO_T *p_db_record_info_1, uint32_t db_re
 
         assert(memcmp(p_db_record_info_1[i].db_record.p_key, p_db_record_info_2[i].db_record.p_key, p_db_record_info_1->db_record_properties.key_size) == 0);
         assert(memcmp(p_db_record_info_1[i].db_record.p_value, p_db_record_info_2[i].db_record.p_value, p_db_record_info_1->db_record_properties.value_size) == 0);
-
-#if defined(__PRINT_DETAILS__)
-        DB_RECORD_INFO_T *p_db_record_info_print = &(p_db_record_info_1[i]);
-        char key_string[p_db_record_info_print->db_record_properties.key_size + 1];
-
-        printf("\t--Record: %d--\n", i);
-        printf("record_properties_offset: %llu\n", p_db_record_info_print->db_record_properties_offset);
-        printf("deleted: %" PRIu32 "\n", p_db_record_info_print->db_record_properties.deleted);
-        printf("key_size: %" PRIu32 "\n", p_db_record_info_print->db_record_properties.key_size);
-        printf("value_size: %" PRIu32 "\n", p_db_record_info_print->db_record_properties.value_size);
-        printf("record_value_type: %" PRIu32 "\n", p_db_record_info_print->db_record_properties.record_value_type);
-
-        memset(key_string, 0, p_db_record_info_print->db_record_properties.key_size + 1);
-        memcpy(key_string, p_db_record_info_print->db_record.p_key, p_db_record_info_print->db_record_properties.key_size);
-        printf("key: %s\n", key_string);
-        if (p_db_record_info_print->db_record_properties.record_value_type == FACILEDB_RECORD_VALUE_TYPE_UINT32)
-        {
-            printf("value: %" PRIu32 "\n", *((uint32_t *)p_db_record_info_print->db_record.p_value));
-        }
-        else if (p_db_record_info_print->db_record_properties.record_value_type == FACILEDB_RECORD_VALUE_TYPE_STRING)
-        {
-            printf("value: %s\n", (char *)p_db_record_info_print->db_record.p_value);
-        }
-#endif
     }
 }
 
@@ -183,27 +151,28 @@ void test_faciledb_insert_case1()
         assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_INDEX) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_INDEX) == 0);
 #endif
 
-        DB_SET_INFO_T db_set_info;
+        DB_SET_INFO_T db_set_info, expected_db_set_info;
         char db_set_file_path[FACILEDB_FILE_PATH_BUFFER_LENGTH] = {0};
 
         db_set_info_init(&db_set_info);
         get_test_faciledb_file_path(db_set_file_path, db_set_name);
         db_set_info.file = fopen(db_set_file_path, "rb");
+        db_set_info.set_name_size = strlen(db_set_name);
+        db_set_info.p_set_name = db_set_name;
 
         // check db_set_info
         assert(db_set_info.file != NULL);
 
         // check db_set_properties.
-        read_db_set_properties(&db_set_info);
-        // clang-format off
-        DB_SET_PROPERTIES_T expect_db_set_properties = {
-            .block_num = 1,
-            .data_num = 1,
-            .set_name_size = strlen(db_set_name),
-            .p_set_name = db_set_name
-        };
-        // clang-format on
-        check_faciledb_properties(&(db_set_info.db_set_properties), &expect_db_set_properties);
+        read_and_check_db_set_properties_region(&db_set_info);
+        db_set_info_init(&expected_db_set_info);
+        expected_db_set_info.db_set_properties.block_num = 1;
+        expected_db_set_info.db_set_properties.data_num = 1;
+        expected_db_set_info.set_name_size = strlen(db_set_name);
+        expected_db_set_info.p_set_name = db_set_name;
+
+        check_faciledb_properties(&(db_set_info.db_set_properties), &(expected_db_set_info.db_set_properties));
+        check_faciledb_set_name(&db_set_info, &expected_db_set_info);
 
         // check the db block.
         DB_BLOCK_T db_block;
@@ -237,7 +206,7 @@ void test_faciledb_insert_case1()
                 .record_value_type = data.p_data_records->record_value_type,
                 .value_size = data.p_data_records->value_size
             },
-            .db_record_properties_offset = get_db_block_offset(&(db_set_info.db_set_properties), 1) + (((uint64_t)&expected_db_block.block_data) - ((uint64_t)&expected_db_block))
+            .db_record_properties_offset = get_db_block_offset(&db_set_info, 1) + (((uint64_t)&expected_db_block.block_data) - ((uint64_t)&expected_db_block))
         };
         // clang-format on
         check_faciledb_records(p_db_records_info, record_num, &expected_db_record, 1);
@@ -246,9 +215,7 @@ void test_faciledb_insert_case1()
             free_db_record_info_resources(&(p_db_records_info[i]));
         }
         Mema_Api_Free(MEMA_USER_FACILEDB, p_db_records_info);
-
         fclose(db_set_info.file);
-        free_db_set_info_resources(&db_set_info);
 
         assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_FACILEDB) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_FACILEDB) == 0);
 #if ENABLE_DB_INDEX
@@ -293,27 +260,29 @@ void test_faciledb_insert_case2()
         assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_INDEX) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_INDEX) == 0);
 #endif
 
-        DB_SET_INFO_T db_set_info;
+        DB_SET_INFO_T db_set_info, expected_db_set_info;
         char db_set_file_path[FACILEDB_FILE_PATH_BUFFER_LENGTH] = {0};
 
         db_set_info_init(&db_set_info);
         get_test_faciledb_file_path(db_set_file_path, db_set_name);
         db_set_info.file = fopen(db_set_file_path, "rb");
+        db_set_info.set_name_size = strlen(db_set_name);
+        db_set_info.p_set_name = db_set_name;
 
         // check db_set_info
         assert(db_set_info.file != NULL);
 
         // check db_set_properties.
-        read_db_set_properties(&db_set_info);
-        // clang-format off
-        DB_SET_PROPERTIES_T expect_db_set_properties = {
+        read_and_check_db_set_properties_region(&db_set_info);
+        db_set_info_init(&expected_db_set_info);
+        expected_db_set_info.db_set_properties = (DB_SET_PROPERTIES_T){
             .block_num = 1,
-            .data_num = 1,
-            .set_name_size = strlen(db_set_name),
-            .p_set_name = db_set_name
-        };
-        // clang-format on
-        check_faciledb_properties(&(db_set_info.db_set_properties), &expect_db_set_properties);
+            .data_num = 1};
+        expected_db_set_info.set_name_size = strlen(db_set_name);
+        expected_db_set_info.p_set_name = db_set_name;
+
+        check_faciledb_properties(&(db_set_info.db_set_properties), &(expected_db_set_info.db_set_properties));
+        check_faciledb_set_name(&db_set_info, &expected_db_set_info);
 
         // check the db blocks.
         DB_BLOCK_T db_block;
@@ -348,7 +317,7 @@ void test_faciledb_insert_case2()
                 .record_value_type = data.p_data_records->record_value_type,
                 .value_size = data.p_data_records->value_size
             },
-            .db_record_properties_offset = get_db_block_offset(&(db_set_info.db_set_properties), 1) + (((uint64_t)&expected_db_block.block_data) - ((uint64_t)&expected_db_block))
+            .db_record_properties_offset = get_db_block_offset(&db_set_info, 1) + (((uint64_t)&expected_db_block.block_data) - ((uint64_t)&expected_db_block))
         };
         // clang-format on
         check_faciledb_records(p_db_records_info, record_num, &expected_db_record, 1);
@@ -358,9 +327,7 @@ void test_faciledb_insert_case2()
             free_db_record_info_resources(&(p_db_records_info[i]));
         }
         Mema_Api_Free(MEMA_USER_FACILEDB, p_db_records_info);
-
         fclose(db_set_info.file);
-        free_db_set_info_resources(&db_set_info);
 
         assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_FACILEDB) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_FACILEDB) == 0);
 #if ENABLE_DB_INDEX
@@ -429,28 +396,27 @@ void test_faciledb_insert_case4()
         assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_INDEX) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_INDEX) == 0);
 #endif
 
-        DB_SET_INFO_T db_set_info;
+        DB_SET_INFO_T db_set_info, expected_db_set_info;
         char db_set_file_path[FACILEDB_FILE_PATH_BUFFER_LENGTH] = {0};
 
         db_set_info_init(&db_set_info);
         get_test_faciledb_file_path(db_set_file_path, db_set_name);
         db_set_info.file = fopen(db_set_file_path, "rb");
+        db_set_info.set_name_size = strlen(db_set_name);
+        db_set_info.p_set_name = db_set_name;
 
         // check db_set_info
         assert(db_set_info.file != NULL);
 
         // check db_set_properties.
-        read_db_set_properties(&db_set_info);
-        // clang-format off
-        DB_SET_PROPERTIES_T expect_db_set_properties = {
-            // might be 3
-            .block_num = 2,
-            .data_num = 2,
-            .set_name_size = strlen(db_set_name),
-            .p_set_name = db_set_name
-        };
-        // clang-format on
-        check_faciledb_properties(&(db_set_info.db_set_properties), &expect_db_set_properties);
+        read_and_check_db_set_properties_region(&db_set_info);
+        db_set_info_init(&expected_db_set_info);
+        expected_db_set_info.db_set_properties.block_num = 2; /// might be 3
+        expected_db_set_info.db_set_properties.data_num = 2;
+        expected_db_set_info.set_name_size = strlen(db_set_name);
+        expected_db_set_info.p_set_name = db_set_name;
+        check_faciledb_properties(&(db_set_info.db_set_properties), &(expected_db_set_info.db_set_properties));
+        check_faciledb_set_name(&db_set_info, &expected_db_set_info);
 
         // check the db block.
         DB_BLOCK_T db_block;
@@ -489,7 +455,7 @@ void test_faciledb_insert_case4()
                     .record_value_type = data1.p_data_records->record_value_type,
                     .value_size = data1.p_data_records->value_size
                 },
-                .db_record_properties_offset = get_db_block_offset(&(db_set_info.db_set_properties), 1) + (((uint64_t)&(expected_db_blocks[0].block_data)) - ((uint64_t)&(expected_db_blocks[0])))
+                .db_record_properties_offset = get_db_block_offset(&db_set_info, 1) + (((uint64_t)&(expected_db_blocks[0].block_data)) - ((uint64_t)&(expected_db_blocks[0])))
             },
             {
                 .db_record = (DB_RECORD_T){
@@ -502,7 +468,7 @@ void test_faciledb_insert_case4()
                     .record_value_type = data2.p_data_records[0].record_value_type,
                     .value_size = data2.p_data_records[0].value_size
                 },
-                .db_record_properties_offset = get_db_block_offset(&(db_set_info.db_set_properties), 2) + (((uint64_t)&(expected_db_blocks[1].block_data)) - ((uint64_t)&(expected_db_blocks[1])))
+                .db_record_properties_offset = get_db_block_offset(&db_set_info, 2) + (((uint64_t)&(expected_db_blocks[1].block_data)) - ((uint64_t)&(expected_db_blocks[1])))
             },
             {
                 .db_record = {
@@ -515,7 +481,7 @@ void test_faciledb_insert_case4()
                     .record_value_type = data2.p_data_records[1].record_value_type,
                     .value_size = data2.p_data_records[1].value_size
                 },
-                .db_record_properties_offset = get_db_block_offset(&(db_set_info.db_set_properties), 2) + (((uint64_t)&(expected_db_blocks[1].block_data)) - ((uint64_t)&(expected_db_blocks[1]))) + get_db_record_properties_size() + data2.p_data_records[0].key_size + data2.p_data_records[0].value_size
+                .db_record_properties_offset = get_db_block_offset(&db_set_info, 2) + (((uint64_t)&(expected_db_blocks[1].block_data)) - ((uint64_t)&(expected_db_blocks[1]))) + get_db_record_properties_size() + data2.p_data_records[0].key_size + data2.p_data_records[0].value_size
             }
         };
         // clang-format on
@@ -540,9 +506,7 @@ void test_faciledb_insert_case4()
             }
             Mema_Api_Free(MEMA_USER_FACILEDB, p_db_records_info);
         }
-
         fclose(db_set_info.file);
-        free_db_set_info_resources(&db_set_info);
 
         assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_FACILEDB) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_FACILEDB) == 0);
 #if ENABLE_DB_INDEX
@@ -586,28 +550,30 @@ void test_faciledb_insert_case3()
 #endif
 
         char faciledb_set_file_path[FACILEDB_FILE_PATH_BUFFER_LENGTH] = {0};
-        DB_SET_INFO_T db_set_info;
+        DB_SET_INFO_T db_set_info, expected_db_set_info;
 
         get_test_faciledb_file_path(faciledb_set_file_path, db_set_name);
         db_set_info_init(&db_set_info);
         db_set_info.file = fopen(faciledb_set_file_path, "rb");
+        db_set_info.set_name_size = strlen(db_set_name);
+        db_set_info.p_set_name = db_set_name;
 
         // check db_set_info
         assert(db_set_info.file != NULL);
 
         // check db_set_properties.
-        read_db_set_properties(&db_set_info);
-        uint32_t expect_block_num = (get_db_record_properties_size() + data.p_data_records->key_size + data.p_data_records->value_size) / FACILEDB_BLOCK_DATA_SIZE;
-        expect_block_num += (((get_db_record_properties_size() + data.p_data_records->key_size + data.p_data_records->value_size) % FACILEDB_BLOCK_DATA_SIZE) != 0) ? (1) : (0);
+        read_and_check_db_set_properties_region(&db_set_info);
+        db_set_info_init(&expected_db_set_info);
+        uint32_t expected_block_num = (get_db_record_properties_size() + data.p_data_records->key_size + data.p_data_records->value_size) / FACILEDB_BLOCK_DATA_SIZE;
+        expected_block_num += (((get_db_record_properties_size() + data.p_data_records->key_size + data.p_data_records->value_size) % FACILEDB_BLOCK_DATA_SIZE) != 0) ? (1) : (0);
         // clang-format off
-        DB_SET_PROPERTIES_T expect_db_set_properties = {
-            .block_num = expect_block_num,
-            .data_num = 1,
-            .set_name_size = strlen(db_set_name),
-            .p_set_name = db_set_name
-        };
+        expected_db_set_info.db_set_properties.block_num = expected_block_num;
+        expected_db_set_info.db_set_properties.data_num = 1;
+        expected_db_set_info.set_name_size = strlen(db_set_name);
+        expected_db_set_info.p_set_name = db_set_name;
         // clang-format on
-        check_faciledb_properties(&(db_set_info.db_set_properties), &expect_db_set_properties);
+        check_faciledb_properties(&(db_set_info.db_set_properties), &(expected_db_set_info.db_set_properties));
+        check_faciledb_set_name(&db_set_info, &expected_db_set_info);
 
         // check the db block.
         DB_BLOCK_T db_block;
@@ -655,7 +621,7 @@ void test_faciledb_insert_case3()
                 .record_value_type = data.p_data_records->record_value_type,
                 .value_size = data.p_data_records->value_size
             },
-            .db_record_properties_offset = get_db_block_offset(&(db_set_info.db_set_properties), 1) + (((uint64_t)&(expected_db_block[0].block_data)) - ((uint64_t)&(expected_db_block[0])))
+            .db_record_properties_offset = get_db_block_offset(&db_set_info, 1) + (((uint64_t)&(expected_db_block[0].block_data)) - ((uint64_t)&(expected_db_block[0])))
         };
         // clang-format on
         check_faciledb_records(p_db_records_info, record_num, &expected_db_record, 1);
@@ -665,9 +631,7 @@ void test_faciledb_insert_case3()
             free_db_record_info_resources(&(p_db_records_info[i]));
         }
         Mema_Api_Free(MEMA_USER_FACILEDB, p_db_records_info);
-
         fclose(db_set_info.file);
-        free_db_set_info_resources(&db_set_info);
 
         assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_FACILEDB) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_FACILEDB) == 0);
 #if ENABLE_DB_INDEX
@@ -736,26 +700,25 @@ void test_faciledb_insert_case5()
 #endif
 
         char faciledb_set_file_path[FACILEDB_FILE_PATH_BUFFER_LENGTH] = {0};
-        DB_SET_INFO_T db_set_info;
+        DB_SET_INFO_T db_set_info, expected_db_set_info;
 
         get_test_faciledb_file_path(faciledb_set_file_path, db_set_name);
         db_set_info_init(&db_set_info);
         db_set_info.file = fopen(faciledb_set_file_path, "rb");
+        db_set_info.set_name_size = strlen(db_set_name);
+        db_set_info.p_set_name = db_set_name;
 
         // check db_set_info
         assert(db_set_info.file != NULL);
 
         // check db_set_properties.
-        read_db_set_properties(&db_set_info);
-        // clang-format off
-        DB_SET_PROPERTIES_T expect_db_set_properties = {
-            .block_num = 3,
-            .data_num = 2,
-            .set_name_size = strlen(db_set_name),
-            .p_set_name = db_set_name
-        };
-        // clang-format on
-        check_faciledb_properties(&(db_set_info.db_set_properties), &expect_db_set_properties);
+        read_and_check_db_set_properties_region(&db_set_info);
+        expected_db_set_info.db_set_properties.block_num = 3;
+        expected_db_set_info.db_set_properties.data_num = 2;
+        expected_db_set_info.set_name_size = strlen(db_set_name);
+        expected_db_set_info.p_set_name = db_set_name;
+        check_faciledb_properties(&(db_set_info.db_set_properties), &expected_db_set_info.db_set_properties);
+        check_faciledb_set_name(&db_set_info, &expected_db_set_info);
 
         // check the db block.
         DB_BLOCK_T db_block;
@@ -803,7 +766,7 @@ void test_faciledb_insert_case5()
                     .record_value_type = data[0].p_data_records->record_value_type,
                     .value_size = data[0].p_data_records->value_size
                 },
-                .db_record_properties_offset = get_db_block_offset(&(db_set_info.db_set_properties), 1) + (((uint64_t)&(expected_db_blocks[0].block_data)) - ((uint64_t)&(expected_db_blocks[0])))
+                .db_record_properties_offset = get_db_block_offset(&db_set_info, 1) + (((uint64_t)&(expected_db_blocks[0].block_data)) - ((uint64_t)&(expected_db_blocks[0])))
             },
             {
                 .db_record = (DB_RECORD_T){
@@ -816,7 +779,7 @@ void test_faciledb_insert_case5()
                     .record_value_type = data[1].p_data_records[0].record_value_type,
                     .value_size = data[1].p_data_records[0].value_size
                 },
-                .db_record_properties_offset = get_db_block_offset(&(db_set_info.db_set_properties), 3) + (((uint64_t)&(expected_db_blocks[3].block_data)) - ((uint64_t)&(expected_db_blocks[3])))
+                .db_record_properties_offset = get_db_block_offset(&db_set_info, 3) + (((uint64_t)&(expected_db_blocks[3].block_data)) - ((uint64_t)&(expected_db_blocks[3])))
             },
             {
                 .db_record = {
@@ -829,7 +792,7 @@ void test_faciledb_insert_case5()
                     .record_value_type = data[1].p_data_records[1].record_value_type,
                     .value_size = data[1].p_data_records[1].value_size
                 },
-                .db_record_properties_offset = get_db_block_offset(&(db_set_info.db_set_properties), 3) + (((uint64_t)&(expected_db_blocks[3].block_data)) - ((uint64_t)&(expected_db_blocks[3]))) + get_db_record_properties_size() + data[1].p_data_records[0].key_size + data[1].p_data_records[0].value_size
+                .db_record_properties_offset = get_db_block_offset(&db_set_info, 3) + (((uint64_t)&(expected_db_blocks[3].block_data)) - ((uint64_t)&(expected_db_blocks[3]))) + get_db_record_properties_size() + data[1].p_data_records[0].key_size + data[1].p_data_records[0].value_size
             }
         };
         // clang-format on
@@ -874,9 +837,7 @@ void test_faciledb_insert_case5()
             free_db_record_info_resources(&(p_db_records_info[i]));
         }
         Mema_Api_Free(MEMA_USER_FACILEDB, p_db_records_info);
-
         fclose(db_set_info.file);
-        free_db_set_info_resources(&db_set_info);
 
         assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_FACILEDB) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_FACILEDB) == 0);
 #if ENABLE_DB_INDEX
@@ -1543,6 +1504,124 @@ void test_faciledb_search_case3()
     for (uint32_t i = 0; i < 4; i++)
     {
 
+        FacileDB_Api_Free_Search_Result(p_faciledb_search_result[i]);
+    }
+
+    {
+        // check
+        assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_FACILEDB) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_FACILEDB) == 0);
+#if ENABLE_DB_INDEX
+        assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_INDEX) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_INDEX) == 0);
+#endif
+    }
+
+    test_end(case_name);
+}
+
+// Copy from search case1 and modified to reoprn database case
+void test_faciledb_search_case4()
+{
+    char case_name[] = "test_faciledb_search_case4";
+    test_start(case_name);
+
+    char db_set_name[] = "test_db_search_case4";
+    // clang-format off
+    FACILEDB_DATA_T data = {
+        .record_num = 1,
+        .p_data_records = (FACILEDB_RECORD_T[]){
+            {
+                .key_size = 2, // 'a' and '\0'
+                .p_key = (void *)"a",
+                .value_size = sizeof(uint32_t),
+                .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                .p_value = (void *)&(uint32_t){1}
+            }
+        }
+    };
+    FACILEDB_RECORD_T search_record[3] = {
+        // match: 1
+        {
+            .key_size = 2,
+            .p_key = (void *)"a",
+            .value_size = sizeof(uint32_t),
+            .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+            .p_value = (void *)&(uint32_t){1}
+        },
+        // match: 0
+        {
+            .key_size = 2,
+            .p_key = (void *)"a",
+            .value_size = sizeof(uint32_t),
+            .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+            .p_value = (void *)&(uint32_t){2}
+        },
+        // match: 0
+        {
+            .key_size = 2,
+            .p_key = (void *)"b",
+            .value_size = sizeof(uint32_t),
+            .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+            .p_value = (void *)&(uint32_t){1}
+        }
+    };
+    // clang-format on
+    FACILEDB_DATA_SEARCH_RESULT_T *p_faciledb_search_result[3];
+
+    FacileDB_Api_Init(test_faciledb_directory);
+    // insert 1 data
+    FacileDB_Api_Insert_Data(db_set_name, &data);
+    FacileDB_Api_Close();
+
+    // Reopen database
+    FacileDB_Api_Init(test_faciledb_directory);
+    // search
+    p_faciledb_search_result[0] = FacileDB_Api_Search_Equal(db_set_name, &(search_record[0]));
+    p_faciledb_search_result[1] = FacileDB_Api_Search_Equal(db_set_name, &(search_record[1]));
+    p_faciledb_search_result[2] = FacileDB_Api_Search_Equal(db_set_name, &(search_record[2]));
+
+    FacileDB_Api_Close();
+
+    // Check
+    // clang-format off
+    FACILEDB_DATA_SEARCH_RESULT_T expected_search_result[3] = {
+        {
+            .data_num = 1,
+            .p_data_array = (FACILEDB_DATA_T[]){
+                {
+                    .record_num = 1,
+                    .p_data_records = (FACILEDB_RECORD_T *)&(
+                        (FACILEDB_RECORD_T){
+                            .key_size = 2,
+                            .p_key = (void *)"a",
+                            .value_size = sizeof(uint32_t),
+                            .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                            .p_value = (void *)&(uint32_t){1}
+                        }
+                    )
+                }
+            }
+        },
+        {
+            .data_num = 0,
+            .p_data_array = NULL
+        },
+        {
+            .data_num = 0,
+            .p_data_array = NULL
+        }
+    };
+    // clang-format on
+
+    {
+        // check
+        for (uint32_t i = 0; i < 3; i++)
+        {
+            check_faciledb_search_result(p_faciledb_search_result[i], &(expected_search_result[i]));
+        }
+    }
+
+    for (uint32_t i = 0; i < 3; i++)
+    {
         FacileDB_Api_Free_Search_Result(p_faciledb_search_result[i]);
     }
 
@@ -2384,6 +2463,7 @@ int main()
     test_faciledb_search_case1();
     test_faciledb_search_case2();
     test_faciledb_search_case3();
+    test_faciledb_search_case4();
 
     test_faciledb_delete_case0();
     test_faciledb_delete_case1();

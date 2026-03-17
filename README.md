@@ -12,6 +12,11 @@ FacileDB aims for portability and a minimal footprint, making it a good fit for 
 - Minimal dependencies: Easy to inspect, modify, and extend — ideal for learning, experimentation, or integration into other projects.
 
 
+## TODO
+- recovery: block
+- recovery: delete
+- Discuss: mmap
+
 ---
 
 

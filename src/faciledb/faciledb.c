@@ -39,6 +39,10 @@
 // TODO: FIFO, LRU
 #endif // DB_SET_INFO_INSTANCE_NUM
 
+#ifndef DB_SET_PROPERTIES_NUM
+#define DB_SET_PROPERTIES_NUM (2)
+#endif
+
 #ifndef DB_SEARCH_DATA_INFO_BUFFER_LEN
 #define DB_SEARCH_DATA_INFO_BUFFER_LEN (8)
 #endif // DB_SEARCH_DATA_INFO_BUFFER_LEN
@@ -126,8 +130,8 @@ typedef struct
     uint64_t created_time;
     uint64_t modified_time;
     uint32_t deleted;
-    uint32_t valid_record_num; // data based
-    uint32_t record_crc32; // foreach (RECORD_PROPERTIES_T + RECORD_T) whose delete flag is not 0.
+    uint32_t valid_record_num;   // data based
+    uint32_t record_crc32;       // foreach (RECORD_PROPERTIES_T + RECORD_T) whose delete flag is not 0.
     uint32_t block_header_crc32; // crc32 of the above values (doesn't include block_crc32 itself)
 
     uint8_t block_data[FACILEDB_BLOCK_DATA_SIZE]; // store db_records.
@@ -149,15 +153,21 @@ typedef struct DB_BLOCK_LIST_ENTRY_T
 
 typedef struct
 {
+    uint64_t seq_num; // // Monotonically increasing sequence used to determine the latest valid header during recovery.
     uint64_t block_num;
     uint64_t created_time;
     uint64_t modified_time;
     uint64_t data_num;
     uint32_t crc32; // crc32 of the above values (doesn't include crc32 itself)
+} DB_SET_PROPERTIES_T;
+
+typedef struct
+{
+    DB_SET_PROPERTIES_T db_set_properties_list[DB_SET_PROPERTIES_NUM];
 
     uint32_t set_name_size;
     void *p_set_name;
-} DB_SET_PROPERTIES_T;
+} DB_SET_PROPERTIES_REGION_T;
 
 typedef struct
 {
@@ -175,10 +185,13 @@ typedef struct
 typedef struct
 {
     DB_SET_INFO_STATUS_E status;
-    DB_SET_INFO_SYNC_T db_set_info_sync; // rename to sync_info
+    DB_SET_INFO_SYNC_T db_set_info_sync;
 
     FILE *file;
+
     DB_SET_PROPERTIES_T db_set_properties;
+    uint32_t set_name_size;
+    void *p_set_name;
 } DB_SET_INFO_T;
 
 typedef struct
@@ -186,23 +199,26 @@ typedef struct
 #if IS_POSIX_API_SUPPORT
     pthread_mutex_t mutex;
 #endif
-    DB_CONTEXT_STATUS_E status; // TODO: move status to DB_CONTEXT_T
 } DB_CONTEXT_SYNC_T;
 
 typedef struct
 {
-    DB_CONTEXT_SYNC_T db_context_sync;
-    DB_SET_INFO_T *p_db_set_info_instances_list;
+    DB_CONTEXT_STATUS_E status;
+    DB_CONTEXT_SYNC_T sync;
+    DB_SET_INFO_T *p_db_set_info_instances_list; // TODO
     char db_directory_path[FACILEDB_FILE_PATH_BUFFER_LENGTH];
 } DB_CONTEXT_T;
 // End of structure definition
 
 // static variables
-static DB_CONTEXT_SYNC_T db_context_sync = {
+static DB_CONTEXT_T db_context = {
+    .status = DB_CONTEXT_STATUS_UNUSED,
+    .sync = {
 #if IS_POSIX_API_SUPPORT
-    .mutex = PTHREAD_MUTEX_INITIALIZER,
+        .mutex = PTHREAD_MUTEX_INITIALIZER,
 #endif
-    .status = DB_CONTEXT_STATUS_UNUSED};
+    },
+    .db_directory_path = {0}};
 
 static DB_SET_INFO_T db_set_info_instance[DB_SET_INFO_INSTANCE_NUM] = {
     {.status = DB_SET_INFO_STATUS_RELEASED,
@@ -216,8 +232,6 @@ static DB_SET_INFO_T db_set_info_instance[DB_SET_INFO_INSTANCE_NUM] = {
          .reader_waiting_count = 0,
          .writer_waiting_count = 0,
          .reader_count = 0}}};
-
-static char db_directory_path[FACILEDB_FILE_PATH_BUFFER_LENGTH] = {0};
 // End of static vaiables
 
 // Local function declaration
@@ -232,16 +246,19 @@ void db_set_info_instances_init();
 DB_SET_INFO_T *request_and_lock_released_db_set_info_instance();
 DB_SET_INFO_T *query_and_lock_db_set_info_loaded(char *p_db_set_name_string);
 DB_SET_INFO_T *load_and_lock_db_set_info(char *p_db_set_name);
+bool load_and_lock_db_set_info_handler_check_and_deep_copy_set_name(DB_SET_INFO_T *p_db_set_info, uint8_t *p_set_name, uint32_t set_name_size);
 void close_db_set_info_instances();
 void create_new_db_set_file_format(DB_SET_INFO_T *p_db_set_info, uint8_t *p_db_set_name, uint32_t db_set_name_size);
-bool read_and_check_db_set_file_format(DB_SET_INFO_T *p_db_set_info, uint8_t *p_db_set_name, uint32_t db_set_name_size);
+bool read_and_check_db_set_file_format(DB_SET_INFO_T *p_db_set_info);
 
 void db_set_info_init(DB_SET_INFO_T *p_db_set_info);
 bool is_db_set_file_exist(char *p_db_set_file_path);
 void get_db_set_file_path_by_db_set_name(char *p_db_set_name, char *p_db_set_file_path);
+void allocate_db_set_info_resources(DB_SET_INFO_T *p_db_set_info);
 void free_db_set_info_resources(DB_SET_INFO_T *p_db_set_info);
 void close_db_set_info(DB_SET_INFO_T *p_db_set_info);
 void db_set_info_sync_init(DB_SET_INFO_SYNC_T *p_db_set_info_sync);
+void sync_latest_db_set_info(DB_SET_INFO_T *p_db_set_info);
 static inline void db_set_info_file_lock_write(DB_SET_INFO_T *p_db_set_info);
 static inline void db_set_info_file_unlock_write(DB_SET_INFO_T *p_db_set_info);
 static inline void db_set_info_file_lock_read(DB_SET_INFO_T *p_db_set_info);
@@ -258,15 +275,20 @@ void update_db_set_info_status_from_reading(DB_SET_INFO_T *p_db_set_info);
 static inline bool check_db_set_info_status(DB_SET_INFO_T *p_db_set_info, DB_SET_INFO_STATUS_E target_status);
 
 void db_set_properties_init(DB_SET_PROPERTIES_T *p_db_set_properties);
-size_t get_db_set_properties_size(DB_SET_PROPERTIES_T *p_db_set_properties);
-bool allocate_db_set_properties_resources(DB_SET_PROPERTIES_T *p_db_set_properties, uint32_t set_name_size);
-void free_db_set_properties_resources(DB_SET_PROPERTIES_T *p_db_set_properties);
-void write_db_set_properties(DB_SET_INFO_T *p_db_set_info);
-uint32_t read_db_set_properties(DB_SET_INFO_T *p_db_set_info);
-void shallow_copy_db_set_properties(DB_SET_PROPERTIES_T *dest, DB_SET_PROPERTIES_T *src);
+void db_set_properties_region_init(DB_SET_PROPERTIES_REGION_T *p_db_set_properties_region);
+static inline size_t get_db_set_properties_size();
+static inline size_t get_db_set_properties_region_size(DB_SET_INFO_T *p_db_set_info);
+void write_db_set_properties(DB_SET_INFO_T *p_db_set_info, DB_SET_PROPERTIES_T *p_db_set_properties, uint32_t db_set_properties_index);
+void write_raw_db_set_properties(DB_SET_INFO_T *p_db_set_info, DB_SET_PROPERTIES_T *p_db_set_properties, uint32_t db_set_properties_index);
+void write_db_set_properties_region(DB_SET_INFO_T *p_db_set_info, DB_SET_PROPERTIES_REGION_T *p_db_set_properties_region);
+uint32_t read_db_set_properties(DB_SET_INFO_T *p_db_set_info, DB_SET_PROPERTIES_T *p_db_set_properties, uint32_t db_set_properties_index);
+uint32_t get_earlist_db_set_properties_index(DB_SET_INFO_T *p_db_set_info);
+void update_to_db_set_properties_region(DB_SET_INFO_T *p_db_set_info);
+bool get_latest_db_set_properties(DB_SET_INFO_T *p_db_set_info, DB_SET_PROPERTIES_T *p_db_set_properties);
+bool read_and_check_db_set_properties_region(DB_SET_INFO_T *p_db_set_info);
 
 void db_block_init(DB_BLOCK_T *p_db_block);
-off_t get_db_block_offset(DB_SET_PROPERTIES_T *p_db_set_properties, uint64_t block_tag);
+off_t get_db_block_offset(DB_SET_INFO_T *p_db_set_info, uint64_t block_tag);
 size_t get_db_block_size();
 void write_db_block(DB_BLOCK_T *p_db_block, DB_SET_INFO_T *p_db_set_info);
 uint32_t read_db_block(DB_SET_INFO_T *p_db_set_info, uint64_t block_tag, DB_BLOCK_T *p_db_block);
@@ -424,16 +446,13 @@ uint32_t FacileDB_Api_Insert_Data(char *p_db_set_name, FACILEDB_DATA_T *p_facile
     db_set_info_sync_write_wait(p_db_set_info);
     update_db_set_info_status(p_db_set_info, DB_SET_INFO_STATUS_WRITING);
     db_set_info_file_lock_write(p_db_set_info);
-    unlock_db_set_info_sync(p_db_set_info);
-
     // read db_set_properties from disk to ensure data consistency
-    // TODO: mmap (?)
+    // Future: mmap (?)
+    sync_latest_db_set_info(p_db_set_info);
+    unlock_db_set_info_sync(p_db_set_info);
 
     data_tag = ++(p_db_set_info->db_set_properties.data_num);
     insert_db_data(p_db_set_info, &db_data_info, data_tag);
-
-    // write db_set_properties fields into disk
-    write_db_set_properties(p_db_set_info);
 
     lock_db_set_info_sync(p_db_set_info);
     db_set_info_file_unlock_write(p_db_set_info);
@@ -492,6 +511,7 @@ FACILEDB_DATA_SEARCH_RESULT_T *FacileDB_Api_Search_Equal(char *p_db_set_name, FA
     db_set_info_sync_read_wait(p_db_set_info);
     update_db_set_info_status(p_db_set_info, DB_SET_INFO_STATUS_READING);
     db_set_info_file_lock_read(p_db_set_info);
+    sync_latest_db_set_info(p_db_set_info);
     unlock_db_set_info_sync(p_db_set_info);
 
     search_db_data(p_db_set_info, &target_db_record, FACILEDB_RECORD_VALUE_TYPE_COMPARE_EQUAL, &db_data_info_list_entry);
@@ -565,6 +585,7 @@ uint32_t FacileDB_Api_Delete_Equal(char *p_db_set_name, FACILEDB_RECORD_T *p_fac
     db_set_info_sync_write_wait(p_db_set_info);
     update_db_set_info_status(p_db_set_info, DB_SET_INFO_STATUS_WRITING);
     db_set_info_file_lock_write(p_db_set_info);
+    sync_latest_db_set_info(p_db_set_info);
     unlock_db_set_info_sync(p_db_set_info);
 
     search_db_data(p_db_set_info, &target_db_record, FACILEDB_RECORD_VALUE_TYPE_COMPARE_EQUAL, &db_data_info_list_entry);
@@ -614,7 +635,7 @@ void FacileDB_Api_Free_Search_Result(FACILEDB_DATA_SEARCH_RESULT_T *p_faciledb_s
 static inline void lock_db_context_sync()
 {
 #if IS_POSIX_API_SUPPORT
-    pthread_mutex_t *p_db_context_mutex = &(db_context_sync.mutex);
+    pthread_mutex_t *p_db_context_mutex = &(db_context.sync.mutex);
     pthread_mutex_lock(p_db_context_mutex);
 #endif
 }
@@ -622,14 +643,14 @@ static inline void lock_db_context_sync()
 static inline void unlock_db_context_sync()
 {
 #if IS_POSIX_API_SUPPORT
-    pthread_mutex_t *p_db_context_mutex = &(db_context_sync.mutex);
+    pthread_mutex_t *p_db_context_mutex = &(db_context.sync.mutex);
     pthread_mutex_unlock(p_db_context_mutex);
 #endif
 }
 
 void update_db_context_status(DB_CONTEXT_STATUS_E new_status)
 {
-    DB_CONTEXT_STATUS_E *p_db_context_sync_status = &(db_context_sync.status);
+    DB_CONTEXT_STATUS_E *p_db_context_sync_status = &(db_context.status);
     DB_CONTEXT_STATUS_E current_status = *p_db_context_sync_status;
     bool is_valid_transition = false;
 
@@ -684,7 +705,7 @@ void update_db_context_status(DB_CONTEXT_STATUS_E new_status)
 // Lock the db_context_mutex before using this function.
 static inline bool check_db_context_status(DB_CONTEXT_STATUS_E target_status)
 {
-    return (db_context_sync.status == target_status);
+    return (db_context.status == target_status);
 }
 
 bool set_db_directory_path(char *p_db_directory_path)
@@ -739,15 +760,15 @@ bool set_db_directory_path(char *p_db_directory_path)
         }
     }
 
-    strncpy(db_directory_path, temp_db_directory_path, FACILEDB_FILE_PATH_MAX_LENGTH);
-    db_directory_path[FACILEDB_FILE_PATH_MAX_LENGTH] = '\0';
+    strncpy(db_context.db_directory_path, temp_db_directory_path, FACILEDB_FILE_PATH_MAX_LENGTH);
+    db_context.db_directory_path[FACILEDB_FILE_PATH_MAX_LENGTH] = '\0';
 
     return true;
 }
 
 void clear_db_directory_path()
 {
-    memset(db_directory_path, '\0', sizeof(db_directory_path));
+    memset(db_context.db_directory_path, '\0', sizeof(db_context.db_directory_path));
 }
 
 void db_set_info_instances_init()
@@ -806,8 +827,8 @@ DB_SET_INFO_T *query_and_lock_db_set_info_loaded(char *p_db_set_name_string)
     lock_db_set_info_sync(p_target_db_set_info);
 
     if (p_target_db_set_info->status >= DB_SET_INFO_STATUS_READY &&
-        (p_target_db_set_info->db_set_properties.set_name_size == db_set_name_string_size) &&
-        (memcmp(p_target_db_set_info->db_set_properties.p_set_name, p_db_set_name_string, db_set_name_string_size) == 0))
+        (p_target_db_set_info->set_name_size == db_set_name_string_size) &&
+        (memcmp(p_target_db_set_info->p_set_name, p_db_set_name_string, db_set_name_string_size) == 0))
     {
         return p_target_db_set_info;
     }
@@ -822,23 +843,30 @@ DB_SET_INFO_T *query_and_lock_db_set_info_loaded(char *p_db_set_name_string)
 void create_new_db_set_file_format(DB_SET_INFO_T *p_db_set_info, uint8_t *p_db_set_name, uint32_t db_set_name_size)
 {
     uint64_t current_time = get_current_time();
+    DB_SET_PROPERTIES_REGION_T new_region;
 
-    // Setup set_name nad write new db properties into file.
+    // Update to db_set_info.
     // store the db_set_name without the '\0'.
-    allocate_db_set_properties_resources(&(p_db_set_info->db_set_properties), db_set_name_size);
-    p_db_set_info->db_set_properties.set_name_size = db_set_name_size;
-    memcpy(p_db_set_info->db_set_properties.p_set_name, p_db_set_name, p_db_set_info->db_set_properties.set_name_size);
+    p_db_set_info->set_name_size = db_set_name_size;
+    allocate_db_set_info_resources(p_db_set_info);
+    memcpy(p_db_set_info->p_set_name, p_db_set_name, db_set_name_size);
     p_db_set_info->db_set_properties.created_time = current_time;
     p_db_set_info->db_set_properties.modified_time = current_time;
+    p_db_set_info->db_set_properties.seq_num = 1; // set first db_set_properties.seq_num as 1
 
-    write_db_set_properties(p_db_set_info);
+    // assign value to db_set_properties_region
+    db_set_properties_region_init(&new_region);
+    memcpy(&(new_region.db_set_properties_list[0]), &(p_db_set_info->db_set_properties), sizeof(DB_SET_PROPERTIES_T));
+    // shallow assign p_set_name
+    new_region.set_name_size = db_set_name_size;
+    new_region.p_set_name = p_db_set_info->p_set_name;
+
+    write_db_set_properties_region(p_db_set_info, &new_region);
 }
 
-bool read_and_check_db_set_file_format(DB_SET_INFO_T *p_db_set_info, uint8_t *p_db_set_name, uint32_t db_set_name_size)
+bool read_and_check_db_set_file_format(DB_SET_INFO_T *p_db_set_info)
 {
-    DB_SET_PROPERTIES_T *p_db_set_properties = &(p_db_set_info->db_set_properties);
-    DB_SET_PROPERTIES_T expected_db_set_properties = {.set_name_size = db_set_name_size};
-    size_t expected_db_set_properties_size = get_db_set_properties_size(&expected_db_set_properties);
+    size_t expected_db_set_properties_region_size = get_db_set_properties_region_size(p_db_set_info);
 
 #if IS_POSIX_API_SUPPORT
     // read db properties from file and check set_name_size & set_name
@@ -846,30 +874,13 @@ bool read_and_check_db_set_file_format(DB_SET_INFO_T *p_db_set_info, uint8_t *p_
     int fd = fileno(p_db_set_info->file);
     off_t file_size = lseek(fd, 0, SEEK_END);
 
-    if (file_size >= expected_db_set_properties_size)
-    {
-        if(read_db_set_properties(p_db_set_info) <= 0)
-        {
-            // db_set_properties crc32 check failed.
-            assert(false);
-        }
-
-        if ((p_db_set_properties->set_name_size == db_set_name_size) && (memcmp(p_db_set_properties->p_set_name, p_db_set_name, db_set_name_size) == 0))
-        {
-            return true;
-        }
-        else
-        {
-            free_db_set_properties_resources(p_db_set_properties);
-            db_set_properties_init(p_db_set_properties);
-            return false;
-        }
-    }
-    else
+    if (file_size < expected_db_set_properties_region_size)
     {
         return false;
     }
 #endif
+
+    return read_and_check_db_set_properties_region(p_db_set_info);
 }
 
 DB_SET_INFO_T *load_and_lock_db_set_info(char *p_db_set_name)
@@ -902,9 +913,9 @@ DB_SET_INFO_T *load_and_lock_db_set_info(char *p_db_set_name)
             // fdopen failed
             perror("DB set file unavailable: ");
 
-            close(fd);
-            unlock_db_set_info_sync(p_db_set_info);
-            return NULL;
+            // close(fd);
+            // unlock_db_set_info_sync(p_db_set_info);
+            // return NULL;
         }
 
         // Write db_set_properties
@@ -931,25 +942,33 @@ DB_SET_INFO_T *load_and_lock_db_set_info(char *p_db_set_name)
             // fdopen failed
             perror("DB set file unavailable: ");
 
-            close(fd);
-            unlock_db_set_info_sync(p_db_set_info);
-            return NULL;
+            // close(fd);
+            // unlock_db_set_info_sync(p_db_set_info);
+            // return NULL;
+        }
+
+        if(load_and_lock_db_set_info_handler_check_and_deep_copy_set_name(p_db_set_info, (uint8_t *)p_db_set_name, strlen(p_db_set_name)) == false)
+        {
+            // set_name error
+            assert(0);
         }
 
         // Try to read db_properties and check if db_properties writed done
         for (uint32_t check_time = 0; check_time < DB_FILE_OPEN_CHECK_TIMEOUT; check_time++)
         {
-            db_set_info_file_lock_read(p_db_set_info);
+            bool check_result = false;
 
-            if (read_and_check_db_set_file_format(p_db_set_info, (uint8_t *)p_db_set_name, strlen(p_db_set_name)) == true)
+            db_set_info_file_lock_read(p_db_set_info);
+            check_result = read_and_check_db_set_file_format(p_db_set_info);
+
+            db_set_info_file_unlock_read(p_db_set_info);
+            if (check_result == true)
             {
-                db_set_info_file_unlock_read(p_db_set_info);
                 timeout = false;
                 break;
             }
             else
             {
-                db_set_info_file_unlock_read(p_db_set_info);
                 usleep(DB_FILE_OPEN_CHECK_INTERVAL_US);
             }
         }
@@ -967,60 +986,22 @@ DB_SET_INFO_T *load_and_lock_db_set_info(char *p_db_set_name)
         unlock_db_set_info_sync(p_db_set_info);
         return NULL;
     }
-
-#else
-    if (is_db_set_file_exist(db_set_file_path))
-    {
-        // open existed db_set_file as read and write permission.
-        if (!((access(db_set_file_path, R_OK | W_OK) == 0) && ((p_db_set_info->file = fopen(db_set_file_path, "rb+")) != NULL)))
-        {
-            // db set file unreadable or unwritable
-            perror("DB set file unavailable:");
-            return NULL;
-        }
-
-        // read db properties from file and check set_name
-        if(read_db_set_properties(p_db_set_info) <= 0)
-        {
-            // db_set_properties crc32 check failed.
-            assert(false);
-        }
-
-        if (!((strlen(p_db_set_name) == p_db_set_info->db_set_properties.set_name_size) &&
-              (memcmp(p_db_set_name, p_db_set_info->db_set_properties.p_set_name, p_db_set_info->db_set_properties.set_name_size) == 0)))
-        {
-            close_db_set_info(p_db_set_info);
-            return NULL;
-        }
-    }
-    else
-    {
-        uint64_t current_time = 0;
-
-        // db set file doesn't exist. Create a new db set file.
-        p_db_set_info->file = fopen(db_set_file_path, "wb+");
-        if (p_db_set_info->file == NULL)
-        {
-            // create db set file failed.
-            perror("DB set file unavailable: ");
-            return NULL;
-        }
-
-        // Setup set_name nad write new db properties into file.
-        // store the db_set_name without the '\0'.
-        // TODO: Setup variables
-        allocate_db_set_properties_resources(&(p_db_set_info->db_set_properties), strlen(p_db_set_name));
-        current_time = get_current_time();
-        p_db_set_info->db_set_properties.set_name_size = strlen(p_db_set_name);
-        memcpy(p_db_set_info->db_set_properties.p_set_name, p_db_set_name, p_db_set_info->db_set_properties.set_name_size);
-        p_db_set_info->db_set_properties.created_time = current_time;
-        p_db_set_info->db_set_properties.modified_time = current_time;
-        write_db_set_properties(p_db_set_info);
-    }
 #endif
 
     update_db_set_info_status(p_db_set_info, DB_SET_INFO_STATUS_READY);
     return p_db_set_info;
+}
+
+bool load_and_lock_db_set_info_handler_check_and_deep_copy_set_name(DB_SET_INFO_T *p_db_set_info, uint8_t *p_set_name, uint32_t set_name_size)
+{
+    bool valid = true;
+    // TODO: add checkers
+
+    p_db_set_info->set_name_size = set_name_size;
+    allocate_db_set_info_resources(p_db_set_info);
+    memcpy(p_db_set_info->p_set_name, p_set_name, set_name_size);
+
+    return valid;
 }
 
 void close_db_set_info_instances()
@@ -1052,6 +1033,8 @@ void close_db_set_info_instances()
 void db_set_info_init(DB_SET_INFO_T *p_db_set_info)
 {
     p_db_set_info->file = NULL;
+    p_db_set_info->set_name_size = 0;
+    p_db_set_info->p_set_name = NULL;
     db_set_properties_init(&(p_db_set_info->db_set_properties));
     db_set_info_sync_init(&(p_db_set_info->db_set_info_sync));
 }
@@ -1079,13 +1062,13 @@ void get_db_set_file_path_by_db_set_name(char *p_db_set_name, char *p_db_set_fil
 
     char file_extension[] = ".faciledb";
 
-    if ((strlen(db_directory_path) + strlen(p_db_set_name) + strlen(file_extension)) > FACILEDB_FILE_PATH_MAX_LENGTH)
+    if ((strlen(db_context.db_directory_path) + strlen(p_db_set_name) + strlen(file_extension)) > FACILEDB_FILE_PATH_MAX_LENGTH)
     {
         p_db_set_file_path[0] = '\0';
     }
     else
     {
-        strcpy(p_db_set_file_path, db_directory_path);
+        strcpy(p_db_set_file_path, db_context.db_directory_path);
         strcat(p_db_set_file_path, p_db_set_name);
         strcat(p_db_set_file_path, file_extension);
 
@@ -1093,24 +1076,37 @@ void get_db_set_file_path_by_db_set_name(char *p_db_set_name, char *p_db_set_fil
     }
 }
 
+// assign the set_name_size before using this function.
+void allocate_db_set_info_resources(DB_SET_INFO_T *p_db_set_info)
+{
+    p_db_set_info->p_set_name = Mema_Api_Alloc(MEMA_USER_FACILEDB, p_db_set_info->set_name_size);
+}
+
 void free_db_set_info_resources(DB_SET_INFO_T *p_db_set_info)
 {
-    if (p_db_set_info->file != NULL)
+    if (p_db_set_info->p_set_name != NULL)
     {
-        fclose(p_db_set_info->file);
-        p_db_set_info->file = NULL;
+        Mema_Api_Free(MEMA_USER_FACILEDB, p_db_set_info->p_set_name);
+        p_db_set_info->p_set_name = NULL;
+        p_db_set_info->set_name_size = 0;
     }
 
-    free_db_set_properties_resources(&(p_db_set_info->db_set_properties));
+    // if (p_db_set_info->file != NULL)
+    // {
+    //     fclose(p_db_set_info->file);
+    //     p_db_set_info->file = NULL;
+    // }
 }
 
 void close_db_set_info(DB_SET_INFO_T *p_db_set_info)
 {
     // Free dynamic buffers
     free_db_set_info_resources(p_db_set_info);
+    fclose(p_db_set_info->file);
+    p_db_set_info->file = NULL;
 
-    // // Reset db_set_info variables except db_set_info_status.
-    db_set_info_init(p_db_set_info);
+    // Reset db_set_info variables except db_set_info_status.
+    // db_set_info_init(p_db_set_info);
 }
 
 // This funtion doesn't change the status to RELEASED.
@@ -1120,6 +1116,14 @@ void db_set_info_sync_init(DB_SET_INFO_SYNC_T *p_db_set_info_sync)
     p_db_set_info_sync->reader_waiting_count = 0;
     p_db_set_info_sync->reader_count = 0;
     p_db_set_info_sync->writer_waiting_count = 0;
+}
+
+void sync_latest_db_set_info(DB_SET_INFO_T *p_db_set_info)
+{
+    if(p_db_set_info->file)
+    {
+        get_latest_db_set_properties(p_db_set_info, &(p_db_set_info->db_set_properties));
+    }
 }
 
 static inline void db_set_info_file_lock_write(DB_SET_INFO_T *p_db_set_info)
@@ -1436,69 +1440,61 @@ static inline bool check_db_set_info_status(DB_SET_INFO_T *p_db_set_info, DB_SET
 
 void db_set_properties_init(DB_SET_PROPERTIES_T *p_db_set_properties)
 {
+    p_db_set_properties->seq_num = 0;
     p_db_set_properties->block_num = 0;
     p_db_set_properties->created_time = 0;
     p_db_set_properties->modified_time = 0;
     p_db_set_properties->data_num = 0;
     p_db_set_properties->crc32 = Crc32_Api_Init();
-    p_db_set_properties->set_name_size = 0;
-
-    p_db_set_properties->p_set_name = NULL;
 }
 
-size_t get_db_set_properties_size(DB_SET_PROPERTIES_T *p_db_set_properties)
+void db_set_properties_region_init(DB_SET_PROPERTIES_REGION_T *p_db_set_properties_region)
 {
-    size_t set_properties_size = 0;
+    for (uint32_t i = 0; i < DB_SET_PROPERTIES_NUM; i++)
+    {
+        db_set_properties_init(&(p_db_set_properties_region->db_set_properties_list[i]));
+    }
+
+    p_db_set_properties_region->set_name_size = 0;
+    p_db_set_properties_region->p_set_name = NULL;
+}
+
+static inline size_t get_db_set_properties_size()
+{
+    DB_SET_PROPERTIES_T temp;
 
     // static variable
-    set_properties_size = sizeof(p_db_set_properties->block_num) + sizeof(p_db_set_properties->created_time) + sizeof(p_db_set_properties->modified_time) + sizeof(p_db_set_properties->data_num) + sizeof(p_db_set_properties->crc32) + sizeof(p_db_set_properties->set_name_size);
-    // dynamic variables
-    set_properties_size += p_db_set_properties->set_name_size;
-
-    return set_properties_size;
+    return (sizeof(temp.seq_num) + sizeof(temp.block_num) + sizeof(temp.created_time) + sizeof(temp.modified_time) + sizeof(temp.data_num) + sizeof(temp.crc32));
 }
 
-bool allocate_db_set_properties_resources(DB_SET_PROPERTIES_T *p_db_set_properties, uint32_t set_name_size)
+static inline size_t get_db_set_properties_region_size(DB_SET_INFO_T *p_db_set_info)
 {
-    void *ptr = NULL;
-
-    ptr = Mema_Api_Alloc(MEMA_USER_FACILEDB, set_name_size * sizeof(uint8_t));
-    if (ptr != NULL)
-    {
-        p_db_set_properties->p_set_name = ptr;
-        return true;
-    }
-
-    return false;
-}
-
-void free_db_set_properties_resources(DB_SET_PROPERTIES_T *p_db_set_properties)
-{
-    // free set_name buffer
-    if (p_db_set_properties->p_set_name != NULL)
-    {
-        Mema_Api_Free(MEMA_USER_FACILEDB, p_db_set_properties->p_set_name);
-        p_db_set_properties->p_set_name = NULL;
-    }
+    return ((DB_SET_PROPERTIES_NUM * get_db_set_properties_size()) + sizeof(p_db_set_info->set_name_size) + p_db_set_info->set_name_size);
 }
 
 /*
 ** The file variable in db_set_info should be set before calling this function.
 */
-void write_db_set_properties(DB_SET_INFO_T *p_db_set_info)
+void write_db_set_properties(DB_SET_INFO_T *p_db_set_info, DB_SET_PROPERTIES_T *p_db_set_properties, uint32_t db_set_properties_index)
 {
+    assert(db_set_properties_index < DB_SET_PROPERTIES_NUM);
+
     FILE *p_db_set_file = p_db_set_info->file;
-    DB_SET_PROPERTIES_T *p_db_set_properties = &(p_db_set_info->db_set_properties);
-    
+
+    // update seq_num
+    p_db_set_properties->seq_num += 1;
+
     // update crc32 value
     p_db_set_properties->crc32 = Crc32_Api_Init();
     p_db_set_properties->crc32 = Crc32_Api_Calc(p_db_set_properties->crc32, (void *)p_db_set_properties, offsetof(DB_SET_PROPERTIES_T, crc32));
 
 #if IS_POSIX_API_SUPPORT
     int fd = fileno(p_db_set_file);
-    off_t offset = 0;
+    off_t offset = 0 + (get_db_set_properties_size() * db_set_properties_index);
 
     // write static variables
+    pwrite(fd, &(p_db_set_properties->seq_num), sizeof(p_db_set_properties->seq_num), offset);
+    offset += sizeof(p_db_set_properties->seq_num);
     pwrite(fd, &(p_db_set_properties->block_num), sizeof(p_db_set_properties->block_num), offset);
     offset += sizeof(p_db_set_properties->block_num);
     pwrite(fd, &(p_db_set_properties->created_time), sizeof(p_db_set_properties->created_time), offset);
@@ -1509,47 +1505,90 @@ void write_db_set_properties(DB_SET_INFO_T *p_db_set_info)
     offset += sizeof(p_db_set_properties->data_num);
     pwrite(fd, &(p_db_set_properties->crc32), sizeof(p_db_set_properties->crc32), offset);
     offset += sizeof(p_db_set_properties->crc32);
-    pwrite(fd, &(p_db_set_properties->set_name_size), sizeof(p_db_set_properties->set_name_size), offset);
-    offset += sizeof(p_db_set_properties->set_name_size);
-
-    // write dynamic variables
-    pwrite(fd, p_db_set_properties->p_set_name, p_db_set_properties->set_name_size, offset);
 
     // ensure data is written to disk
     fsync(fd);
-#else  // IS_POSIX_API_SUPPORT
-    fseek(p_db_set_file, 0, SEEK_SET);
-
-    // write static variables
-    fwrite(&(p_db_set_properties->block_num), sizeof(p_db_set_properties->block_num), 1, p_db_set_file);
-    fwrite(&(p_db_set_properties->created_time), sizeof(p_db_set_properties->created_time), 1, p_db_set_file);
-    fwrite(&(p_db_set_properties->modified_time), sizeof(p_db_set_properties->modified_time), 1, p_db_set_file);
-    fwrite(&(p_db_set_properties->data_num), sizeof(p_db_set_properties->data_num), 1, p_db_set_file);
-    fwrite(&(p_db_set_properties->crc32), sizeof(p_db_set_properties->crc32), 1, p_db_set_file);
-    fwrite(&(p_db_set_properties->set_name_size), sizeof(p_db_set_properties->set_name_size), 1, p_db_set_file);
-
-    // write dynamic variables
-    fwrite(p_db_set_properties->p_set_name, p_db_set_properties->set_name_size, 1, p_db_set_file);
 #endif // IS_POSIX_API_SUPPORT
 }
 
 /*
 ** The file variable in db_set_info should be set before calling this function.
-** return value: number of db_set_properties read from file.
+** This funtion write the db_set_properties to the file without calculate the CRC and increase seq_num.
 */
-uint32_t read_db_set_properties(DB_SET_INFO_T *p_db_set_info)
+void write_raw_db_set_properties(DB_SET_INFO_T *p_db_set_info, DB_SET_PROPERTIES_T *p_db_set_properties, uint32_t db_set_properties_index)
 {
+    assert(db_set_properties_index < DB_SET_PROPERTIES_NUM);
+
+    FILE *p_db_set_file = p_db_set_info->file;
+
+#if IS_POSIX_API_SUPPORT
+    int fd = fileno(p_db_set_file);
+    off_t offset = 0 + (get_db_set_properties_size() * db_set_properties_index);
+
+    // write static variables
+    pwrite(fd, &(p_db_set_properties->seq_num), sizeof(p_db_set_properties->seq_num), offset);
+    offset += sizeof(p_db_set_properties->seq_num);
+    pwrite(fd, &(p_db_set_properties->block_num), sizeof(p_db_set_properties->block_num), offset);
+    offset += sizeof(p_db_set_properties->block_num);
+    pwrite(fd, &(p_db_set_properties->created_time), sizeof(p_db_set_properties->created_time), offset);
+    offset += sizeof(p_db_set_properties->created_time);
+    pwrite(fd, &(p_db_set_properties->modified_time), sizeof(p_db_set_properties->modified_time), offset);
+    offset += sizeof(p_db_set_properties->modified_time);
+    pwrite(fd, &(p_db_set_properties->data_num), sizeof(p_db_set_properties->data_num), offset);
+    offset += sizeof(p_db_set_properties->data_num);
+    pwrite(fd, &(p_db_set_properties->crc32), sizeof(p_db_set_properties->crc32), offset);
+    offset += sizeof(p_db_set_properties->crc32);
+
+    // ensure data is written to disk
+    fsync(fd);
+#endif // IS_POSIX_API_SUPPORT
+}
+
+// Only use when write db_set_properties_region into an empty file.
+// Use write_raw_db_set_properties.
+void write_db_set_properties_region(DB_SET_INFO_T *p_db_set_info, DB_SET_PROPERTIES_REGION_T *p_db_set_properties_region)
+{
+    FILE *f = p_db_set_info->file;
+
+    for (uint32_t i = 0; i < DB_SET_PROPERTIES_NUM; i++)
+    {
+        write_raw_db_set_properties(p_db_set_info, &(p_db_set_properties_region->db_set_properties_list[i]), i);
+    }
+
+    // write set name size and set name
+#if IS_POSIX_API_SUPPORT
+    size_t db_set_properties_list_size = 0 + (get_db_set_properties_size() * DB_SET_PROPERTIES_NUM);
+    int fd = fileno(f);
+
+    pwrite(fd, &(p_db_set_properties_region->set_name_size), sizeof(p_db_set_properties_region->set_name_size), db_set_properties_list_size);
+    pwrite(fd, p_db_set_properties_region->p_set_name, p_db_set_properties_region->set_name_size, db_set_properties_list_size + sizeof(p_db_set_properties_region->set_name_size));
+
+    // ensure data is written to disk
+    fsync(fd);
+#endif
+}
+
+/*
+** The file variable in db_set_info should be set before calling this function.
+** return value: number of db_set_properties read from file.
+** Fill in p_db_set_properties when crc32 check passed. Otherwise, keep p_db_set_properties unchanged and return 0 for crc32 check failed.
+*/
+uint32_t read_db_set_properties(DB_SET_INFO_T *p_db_set_info, DB_SET_PROPERTIES_T *p_db_set_properties, uint32_t db_set_properties_index)
+{
+    assert(db_set_properties_index < DB_SET_PROPERTIES_NUM);
+
     FILE *p_db_set_file = p_db_set_info->file;
     DB_SET_PROPERTIES_T temp;
-    DB_SET_PROPERTIES_T *p_db_set_properties = &(p_db_set_info->db_set_properties);
     uint32_t expected_crc32 = Crc32_Api_Init();
 
     // read db_set_properties from file to temp variable and check crc32 value for data integrity first.
     db_set_properties_init(&temp);
 #if IS_POSIX_API_SUPPORT
     int fd = fileno(p_db_set_file);
-    off_t offset = 0;
+    off_t offset = 0 + (get_db_set_properties_size() * db_set_properties_index);
 
+    pread(fd, &(temp.seq_num), sizeof(temp.seq_num), offset);
+    offset += sizeof(temp.seq_num);
     pread(fd, &(temp.block_num), sizeof(temp.block_num), offset);
     offset += sizeof(temp.block_num);
     pread(fd, &(temp.created_time), sizeof(temp.created_time), offset);
@@ -1558,54 +1597,130 @@ uint32_t read_db_set_properties(DB_SET_INFO_T *p_db_set_info)
     offset += sizeof(temp.modified_time);
     pread(fd, &(temp.data_num), sizeof(temp.data_num), offset);
     offset += sizeof(temp.data_num);
-    pread(fd, &(temp.crc32),sizeof(temp.crc32), offset);
-    offset += sizeof(temp.crc32);
-    pread(fd, &(temp.set_name_size), sizeof(temp.set_name_size), offset);
-    offset += sizeof(temp.set_name_size);
-
-    // allocate dynamic variable buffer and read dynamic variables from file
-    allocate_db_set_properties_resources(&temp, temp.set_name_size);
-    pread(fd, temp.p_set_name, temp.set_name_size, offset);
-#else  // IS_POSIX_API_SUPPORT
-    fseek(p_db_set_file, 0, SEEK_SET);
-
-    // read ststic variables
-    fread(&(temp.block_num), sizeof(temp.block_num), 1, p_db_set_file);
-    fread(&(temp.created_time), sizeof(temp.created_time), 1, p_db_set_file);
-    fread(&(temp.modified_time), sizeof(temp.modified_time), 1, p_db_set_file);
-    fread(&(temp.data_num), sizeof(temp.data_num), 1, p_db_set_file);
-    fread(&(temp.crc32), sizeof(temp.crc32), 1, p_db_set_file);
-    fread(&(temp.set_name_size), sizeof(temp.set_name_size), 1, p_db_set_file);
-
-    // allocate dynamic variable buffer and read dynamic variables from file
-    allocate_db_set_properties_resources(&temp, temp.set_name_size);
-    fread(temp.p_set_name, temp.set_name_size, 1, p_db_set_file);
+    pread(fd, &(temp.crc32), sizeof(temp.crc32), offset);
 #endif // IS_POSIX_API_SUPPORT
 
-    // copy to db_set_properties only when crc32 check passed. Otherwise, keep db_set_properties unchanged and return false for crc32 check failed.
+    // copy to db_set_properties when crc32 check passed. Otherwise, keep db_set_properties unchanged and return false for crc32 check failed.
     expected_crc32 = Crc32_Api_Calc(expected_crc32, (void *)&temp, offsetof(DB_SET_PROPERTIES_T, crc32));
 
-    if(temp.crc32 == expected_crc32)
+    if (temp.crc32 == expected_crc32)
     {
-        shallow_copy_db_set_properties(p_db_set_properties, &temp);
+        memcpy(p_db_set_properties, &temp, sizeof(DB_SET_PROPERTIES_T));
         return 1;
+    }
+
+    return 0;
+}
+
+// return the invalid first, then earliest valid db_set_properties index.
+// Doesn't consider the case that time wrapped around.
+uint32_t get_earlist_db_set_properties_index(DB_SET_INFO_T *p_db_set_info)
+{
+    DB_SET_PROPERTIES_T temp;
+    uint64_t earlist_seq_num = UINT64_MAX;
+    uint32_t earlist_index = 0;
+
+    for (uint32_t i = 0; i < DB_SET_PROPERTIES_NUM; i++)
+    {
+        db_set_properties_init(&temp);
+
+        if (read_db_set_properties(p_db_set_info, &temp, i) > 0)
+        {
+            if (i == 0)
+            {
+                earlist_seq_num = temp.seq_num;
+                earlist_index = 0;
+            }
+            else if (earlist_seq_num > temp.seq_num)
+            {
+                earlist_seq_num = temp.seq_num;
+                earlist_index = i;
+            }
+        }
+        else
+        {
+            // invalid db_set_properties.
+            return i;
+        }
+    }
+
+    return earlist_index;
+}
+
+void update_to_db_set_properties_region(DB_SET_INFO_T *p_db_set_info)
+{
+    uint32_t index = get_earlist_db_set_properties_index(p_db_set_info);
+
+    write_db_set_properties(p_db_set_info, &(p_db_set_info->db_set_properties), index);
+}
+
+// return if there is the latest valid db_set_properties existed.
+bool get_latest_db_set_properties(DB_SET_INFO_T *p_db_set_info, DB_SET_PROPERTIES_T *p_db_set_properties)
+{
+    DB_SET_PROPERTIES_T temp;
+    bool has_valid_db_set_properties = false;
+    uint64_t *p_latest_seq_num = &(p_db_set_properties->seq_num);
+
+    for (uint32_t i = 0; i < DB_SET_PROPERTIES_NUM; i++)
+    {
+        db_set_properties_init(&temp);
+
+        // check if read sucessfully and no crc fails.
+        if (read_db_set_properties(p_db_set_info, &temp, i) > 0)
+        {
+            has_valid_db_set_properties = true;
+
+            if ((i == 0) || (*p_latest_seq_num < temp.seq_num))
+            {
+                memcpy(p_db_set_properties, &temp, sizeof(DB_SET_PROPERTIES_T));
+            }
+        }
+    }
+
+    return has_valid_db_set_properties;
+}
+
+// Read db_set_properties_region and update db_set_info variables.
+// If no valid db_set_properties or set name check failed, return false. Otherwise, rturn true and update db_set_info variables.
+bool read_and_check_db_set_properties_region(DB_SET_INFO_T *p_db_set_info)
+{
+    DB_SET_PROPERTIES_T temp;
+    uint8_t *p_temp_set_name;
+    uint32_t temp_set_name_size = 0;
+    bool match = false;
+
+    db_set_properties_init(&temp);
+    if (get_latest_db_set_properties(p_db_set_info, &temp) == false)
+    {
+        // no valid db_set_properties, return false.
+        return false;
+    }
+
+    // read set name size and set name
+#if IS_POSIX_API_SUPPORT
+    int fd = fileno(p_db_set_info->file);
+    size_t db_set_properties_list_size = 0 + (get_db_set_properties_size() * DB_SET_PROPERTIES_NUM);
+
+    pread(fd, &temp_set_name_size, sizeof(temp_set_name_size), db_set_properties_list_size);
+    p_temp_set_name = Mema_Api_Alloc(MEMA_USER_FACILEDB, temp_set_name_size);
+    pread(fd, p_temp_set_name, temp_set_name_size, db_set_properties_list_size + sizeof(temp_set_name_size));
+#endif
+
+    // check if set name read from file matches with the input set name.
+    if (temp_set_name_size == p_db_set_info->set_name_size && memcmp(p_temp_set_name, p_db_set_info->p_set_name, temp_set_name_size) == 0)
+    {
+        // set name check passed, update db_set_info variables.
+        memcpy(&(p_db_set_info->db_set_properties), &temp, sizeof(DB_SET_PROPERTIES_T));
+        match = true;
     }
     else
     {
-        free_db_set_properties_resources(&temp);
-        return 0;
+        // set name check failed.
+        match = false;
     }
-}
 
-void shallow_copy_db_set_properties(DB_SET_PROPERTIES_T *dest, DB_SET_PROPERTIES_T *src)
-{
-    dest->block_num = src->block_num;
-    dest->created_time = src->created_time;
-    dest->modified_time = src->modified_time;
-    dest->data_num = src->data_num;
-    dest->crc32 = src->crc32;
-    dest->set_name_size = src->set_name_size;
-    dest->p_set_name = src->p_set_name;
+    Mema_Api_Free(MEMA_USER_FACILEDB, p_temp_set_name);
+    return match;
 }
 
 void db_block_init(DB_BLOCK_T *p_db_block)
@@ -1624,12 +1739,12 @@ void db_block_init(DB_BLOCK_T *p_db_block)
     memset(p_db_block->block_data, 0, FACILEDB_BLOCK_DATA_SIZE);
 }
 
-off_t get_db_block_offset(DB_SET_PROPERTIES_T *p_db_set_properties, uint64_t block_tag)
+off_t get_db_block_offset(DB_SET_INFO_T *p_db_set_info, uint64_t block_tag)
 {
-    size_t set_properties_size = get_db_set_properties_size(p_db_set_properties);
+    size_t set_properties_region_size = get_db_set_properties_region_size(p_db_set_info);
     size_t block_size = get_db_block_size();
 
-    return (set_properties_size + ((block_tag - 1) * block_size));
+    return (set_properties_region_size + ((block_tag - 1) * block_size));
 }
 
 size_t get_db_block_size()
@@ -1649,11 +1764,11 @@ void write_db_block(DB_BLOCK_T *p_db_block, DB_SET_INFO_T *p_db_set_info)
     FILE *p_db_set_file = p_db_set_info->file;
     DB_SET_PROPERTIES_T *p_db_set_properties = &(p_db_set_info->db_set_properties);
     uint64_t block_tag = p_db_block->block_tag;
-    off_t block_offset = get_db_block_offset(p_db_set_properties, block_tag);
+    off_t block_offset = get_db_block_offset(p_db_set_info, block_tag);
     uint32_t header_crc_value = Crc32_Api_Init();
 
     assert((block_tag > 0) && (block_tag <= p_db_set_properties->block_num));
-    
+
     header_crc_value = Crc32_Api_Calc(header_crc_value, (void *)p_db_block, offsetof(DB_BLOCK_T, block_header_crc32));
     p_db_block->block_header_crc32 = header_crc_value;
     // write static variables
@@ -1724,7 +1839,7 @@ uint32_t read_db_block(DB_SET_INFO_T *p_db_set_info, uint64_t block_tag, DB_BLOC
     assert((block_tag > 0) && (block_tag <= p_db_set_info->db_set_properties.block_num));
 
     FILE *p_db_set_file = p_db_set_info->file;
-    off_t block_offset = get_db_block_offset(&(p_db_set_info->db_set_properties), block_tag);
+    off_t block_offset = get_db_block_offset(p_db_set_info, block_tag);
     DB_BLOCK_T temp;
     uint32_t expected_header_crc32 = Crc32_Api_Init();
 
@@ -1789,7 +1904,7 @@ uint32_t read_db_block(DB_SET_INFO_T *p_db_set_info, uint64_t block_tag, DB_BLOC
 
     // copy temp db block to p_db_block after header crc32 check passed.
     expected_header_crc32 = Crc32_Api_Calc(expected_header_crc32, (void *)&temp, offsetof(DB_BLOCK_T, block_header_crc32));
-    if(temp.block_header_crc32 == expected_header_crc32)
+    if (temp.block_header_crc32 == expected_header_crc32)
     {
         memcpy(p_db_block, &temp, sizeof(DB_BLOCK_T));
         return 1;
@@ -1807,7 +1922,7 @@ uint32_t read_db_block_attributes(DB_SET_INFO_T *p_db_set_info, uint64_t block_t
 
     FILE *p_db_set_file = p_db_set_info->file;
     DB_BLOCK_T temp;
-    off_t block_offset = get_db_block_offset(&(p_db_set_info->db_set_properties), block_tag);
+    off_t block_offset = get_db_block_offset(p_db_set_info, block_tag);
     uint32_t expected_header_crc32 = Crc32_Api_Init();
 
     db_block_init(&temp);
@@ -1849,7 +1964,7 @@ uint32_t read_db_block_attributes(DB_SET_INFO_T *p_db_set_info, uint64_t block_t
 #endif // IS_POSIX_API_SUPPORT
 
     expected_header_crc32 = Crc32_Api_Calc(expected_header_crc32, (void *)&temp, offsetof(DB_BLOCK_T, block_header_crc32));
-    if(temp.block_header_crc32 == expected_header_crc32)
+    if (temp.block_header_crc32 == expected_header_crc32)
     {
         memcpy(p_db_block, &temp, offsetof(DB_BLOCK_T, block_data));
         return 1;
@@ -1887,7 +2002,7 @@ void extract_db_data_info_from_db_blocks(DB_DATA_INFO_T *p_db_data_info, uint64_
     db_data_info_init(&temp_data_info);
     db_block_init(&db_block);
 
-    if(read_db_block(p_db_set_info, start_block_tag, &db_block) <= 0)
+    if (read_db_block(p_db_set_info, start_block_tag, &db_block) <= 0)
     {
         assert(false);
     }
@@ -1929,7 +2044,7 @@ void extract_db_data_info_from_db_blocks(DB_DATA_INFO_T *p_db_data_info, uint64_
 
                 db_block_init(&db_block);
 
-                if(read_db_block(p_db_set_info, next_block_tag, &db_block) <= 0)
+                if (read_db_block(p_db_set_info, next_block_tag, &db_block) <= 0)
                 {
                     assert(false);
                 }
@@ -1967,7 +2082,7 @@ void extract_db_data_info_from_db_blocks(DB_DATA_INFO_T *p_db_data_info, uint64_
                         assert(next_block_tag != 0);
 
                         db_block_init(&db_block);
-                        if(read_db_block(p_db_set_info, next_block_tag, &db_block) <= 0)
+                        if (read_db_block(p_db_set_info, next_block_tag, &db_block) <= 0)
                         {
                             assert(false);
                         }
@@ -1992,7 +2107,7 @@ void extract_db_data_info_from_db_blocks(DB_DATA_INFO_T *p_db_data_info, uint64_
                         assert(next_block_tag != 0);
 
                         db_block_init(&db_block);
-                        if(read_db_block(p_db_set_info, next_block_tag, &db_block) <= 0)
+                        if (read_db_block(p_db_set_info, next_block_tag, &db_block) <= 0)
                         {
                             assert(false);
                         }
@@ -2005,7 +2120,7 @@ void extract_db_data_info_from_db_blocks(DB_DATA_INFO_T *p_db_data_info, uint64_
             }
         }
         // Setting record properties offset and copy db_record_properties from db_block_data.
-        result[i].db_record_properties_offset = get_db_block_offset(&(p_db_set_info->db_set_properties), db_block.block_tag) + (p_block_data - ((uint8_t *)&db_block));
+        result[i].db_record_properties_offset = get_db_block_offset(p_db_set_info, db_block.block_tag) + (p_block_data - ((uint8_t *)&db_block));
         memcpy(&(result[i].db_record_properties), p_block_data, get_db_record_properties_size());
         p_block_data += get_db_record_properties_size();
 
@@ -2027,7 +2142,7 @@ void extract_db_data_info_from_db_blocks(DB_DATA_INFO_T *p_db_data_info, uint64_
                 assert(next_block_tag != 0);
 
                 db_block_init(&db_block);
-                if(read_db_block(p_db_set_info, next_block_tag, &db_block) <= 0)
+                if (read_db_block(p_db_set_info, next_block_tag, &db_block) <= 0)
                 {
                     assert(false);
                 }
@@ -2058,7 +2173,7 @@ void extract_db_data_info_from_db_blocks(DB_DATA_INFO_T *p_db_data_info, uint64_
                 assert(next_block_tag != 0);
 
                 db_block_init(&db_block);
-                if(read_db_block(p_db_set_info, next_block_tag, &db_block) <= 0)
+                if (read_db_block(p_db_set_info, next_block_tag, &db_block) <= 0)
                 {
                     assert(false);
                 }
@@ -2077,14 +2192,14 @@ void extract_db_data_info_from_db_blocks(DB_DATA_INFO_T *p_db_data_info, uint64_
 
     // cehck record crc
     calculated_record_crc32 = Crc32_Api_Init();
-    for(uint32_t i = 0; i < temp_data_info.record_num; i++)
+    for (uint32_t i = 0; i < temp_data_info.record_num; i++)
     {
         calculated_record_crc32 = Crc32_Api_Calc(calculated_record_crc32, &(result[i].db_record_properties), sizeof(DB_RECORD_PROPERTIES_T));
         calculated_record_crc32 = Crc32_Api_Calc(calculated_record_crc32, result[i].db_record.p_key, result[i].db_record_properties.key_size);
         calculated_record_crc32 = Crc32_Api_Calc(calculated_record_crc32, result[i].db_record.p_value, result[i].db_record_properties.value_size);
     }
 
-    if(calculated_record_crc32 != expected_record_crc32)
+    if (calculated_record_crc32 != expected_record_crc32)
     {
         free_db_data_info_resources(&temp_data_info);
         assert(0);
@@ -2105,7 +2220,7 @@ DB_RECORD_INFO_T *extract_db_record_info_from_db_blocks(uint64_t block_tag, DB_S
     uint8_t *p_block_end_address = NULL;
 
     db_block_init(&db_block);
-    if(read_db_block(p_db_set_info, block_tag, &db_block) <= 0)
+    if (read_db_block(p_db_set_info, block_tag, &db_block) <= 0)
     {
         assert(false);
     }
@@ -2137,7 +2252,7 @@ DB_RECORD_INFO_T *extract_db_record_info_from_db_blocks(uint64_t block_tag, DB_S
                 assert(next_block_tag != 0);
 
                 db_block_init(&db_block);
-                if(read_db_block(p_db_set_info, next_block_tag, &db_block) <= 0)
+                if (read_db_block(p_db_set_info, next_block_tag, &db_block) <= 0)
                 {
                     assert(false);
                 }
@@ -2174,7 +2289,7 @@ DB_RECORD_INFO_T *extract_db_record_info_from_db_blocks(uint64_t block_tag, DB_S
                         assert(next_block_tag != 0);
 
                         db_block_init(&db_block);
-                        if(read_db_block(p_db_set_info, next_block_tag, &db_block) <= 0)
+                        if (read_db_block(p_db_set_info, next_block_tag, &db_block) <= 0)
                         {
                             assert(false);
                         }
@@ -2198,7 +2313,7 @@ DB_RECORD_INFO_T *extract_db_record_info_from_db_blocks(uint64_t block_tag, DB_S
                         assert(next_block_tag != 0);
 
                         db_block_init(&db_block);
-                        if(read_db_block(p_db_set_info, next_block_tag, &db_block) <= 0)
+                        if (read_db_block(p_db_set_info, next_block_tag, &db_block) <= 0)
                         {
                             assert(false);
                         }
@@ -2211,7 +2326,7 @@ DB_RECORD_INFO_T *extract_db_record_info_from_db_blocks(uint64_t block_tag, DB_S
             }
         }
         // Setting record properties offset and copy db_record_properties from db_block_data.
-        result[i].db_record_properties_offset = get_db_block_offset(&(p_db_set_info->db_set_properties), db_block.block_tag) + (p_block_data - ((uint8_t *)&db_block));
+        result[i].db_record_properties_offset = get_db_block_offset(p_db_set_info, db_block.block_tag) + (p_block_data - ((uint8_t *)&db_block));
         memcpy(&(result[i].db_record_properties), p_block_data, get_db_record_properties_size());
         p_block_data += get_db_record_properties_size();
 
@@ -2232,7 +2347,7 @@ DB_RECORD_INFO_T *extract_db_record_info_from_db_blocks(uint64_t block_tag, DB_S
                 assert(next_block_tag != 0);
 
                 db_block_init(&db_block);
-                if(read_db_block(p_db_set_info, next_block_tag, &db_block) <= 0)
+                if (read_db_block(p_db_set_info, next_block_tag, &db_block) <= 0)
                 {
                     assert(false);
                 }
@@ -2262,7 +2377,7 @@ DB_RECORD_INFO_T *extract_db_record_info_from_db_blocks(uint64_t block_tag, DB_S
                 assert(next_block_tag != 0);
 
                 db_block_init(&db_block);
-                if(read_db_block(p_db_set_info, next_block_tag, &db_block) <= 0)
+                if (read_db_block(p_db_set_info, next_block_tag, &db_block) <= 0)
                 {
                     assert(false);
                 }
@@ -2595,7 +2710,7 @@ uint32_t insert_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_T *p_db_data_
     p_db_block_end = p_db_block_write + FACILEDB_BLOCK_DATA_SIZE;
 
     // calculate the record crc32 value
-    for(uint32_t i = 0; i < (p_db_data_info->record_num); i++)
+    for (uint32_t i = 0; i < (p_db_data_info->record_num); i++)
     {
         calculated_record_crc32 = Crc32_Api_Calc(calculated_record_crc32, &(p_db_data_info->p_db_record_info[i].db_record_properties), sizeof(DB_RECORD_PROPERTIES_T));
         calculated_record_crc32 = Crc32_Api_Calc(calculated_record_crc32, p_db_data_info->p_db_record_info[i].db_record.p_key, p_db_data_info->p_db_record_info[i].db_record_properties.key_size);
@@ -2705,7 +2820,7 @@ uint32_t insert_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_T *p_db_data_
     p_db_set_info->db_set_properties.modified_time = db_block_list_entry.p_tail->db_block.modified_time;
     // write the db block list into file.
     insert_db_data_handler_write_db_block_list(p_db_set_info, &db_block_list_entry);
-    write_db_set_properties(p_db_set_info);
+    update_to_db_set_properties_region(p_db_set_info);
 
 #if ENABLE_DB_INDEX
     // insert index if existed
@@ -2713,7 +2828,7 @@ uint32_t insert_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_T *p_db_data_
     for (uint32_t i = 0; i < (p_db_data_info->record_num); i++)
     {
         DB_RECORD_INFO_T *p_current_db_record_info = &p_db_data_info->p_db_record_info[i];
-        char *p_index_key = set_db_index_key(p_db_set_info->db_set_properties.p_set_name, p_db_set_info->db_set_properties.set_name_size, p_current_db_record_info->db_record.p_key, p_current_db_record_info->db_record_properties.key_size);
+        char *p_index_key = set_db_index_key(p_db_set_info->p_set_name, p_db_set_info->set_name_size, p_current_db_record_info->db_record.p_key, p_current_db_record_info->db_record_properties.key_size);
 
         // If p_key index has been created, insert new index element.
         if (Index_Api_Index_Key_Exist(p_index_key))
@@ -2799,7 +2914,7 @@ void search_db_data(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_target_db_
 {
 #if ENABLE_DB_INDEX
     // check if index existed and call search_db_data_indexed.
-    char *p_index_key = set_db_index_key(p_db_set_info->db_set_properties.p_set_name, p_db_set_info->db_set_properties.set_name_size, p_target_db_record_info->db_record.p_key, p_target_db_record_info->db_record_properties.key_size);
+    char *p_index_key = set_db_index_key(p_db_set_info->p_set_name, p_db_set_info->set_name_size, p_target_db_record_info->db_record.p_key, p_target_db_record_info->db_record_properties.key_size);
     if (Index_Api_Index_Key_Exist(p_index_key))
     {
         Mema_Api_Free(MEMA_USER_FACILEDB, p_index_key);
@@ -2833,7 +2948,7 @@ void search_db_data_sequential(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p
         db_block_init(&db_block);
 
         // read attribute only for checking delete flag and first block flag.
-        if(read_db_block_attributes(p_db_set_info, block_tag, &db_block) <= 0)
+        if (read_db_block_attributes(p_db_set_info, block_tag, &db_block) <= 0)
         {
             assert(false);
         }
@@ -2907,7 +3022,7 @@ void delete_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_LIST_ENTRY_T *p_d
 
         while (block_tag != 0)
         {
-            if(read_db_block(p_db_set_info, block_tag, &db_block) <= 0)
+            if (read_db_block(p_db_set_info, block_tag, &db_block) <= 0)
             {
                 assert(false);
             }
@@ -2977,13 +3092,13 @@ bool get_db_index_directory_path(char *p_db_index_directory_path)
 {
     const char index_directory_suffix[] = "index/";
 
-    if ((strlen(db_directory_path) + strlen(index_directory_suffix)) > INDEX_FILE_PATH_MAX_LENGTH)
+    if ((strlen(db_context.db_directory_path) + strlen(index_directory_suffix)) > INDEX_FILE_PATH_MAX_LENGTH)
     {
         p_db_index_directory_path[0] = '\0';
         return false;
     }
 
-    strncpy(p_db_index_directory_path, db_directory_path, INDEX_FILE_PATH_MAX_LENGTH);
+    strncpy(p_db_index_directory_path, db_context.db_directory_path, INDEX_FILE_PATH_MAX_LENGTH);
     strcat(p_db_index_directory_path, index_directory_suffix);
     p_db_index_directory_path[INDEX_FILE_PATH_MAX_LENGTH] = '\0';
 
@@ -3029,7 +3144,7 @@ INDEX_ID_TYPE_E get_db_index_id_type(FACILEDB_RECORD_VALUE_TYPE_E record_value_t
 uint32_t make_db_record_index(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_db_record_info)
 {
     uint32_t result_data_num = 0;
-    char *p_index_key = set_db_index_key(p_db_set_info->db_set_properties.p_set_name, p_db_set_info->db_set_properties.set_name_size, p_db_record_info->db_record.p_key, p_db_record_info->db_record_properties.key_size);
+    char *p_index_key = set_db_index_key(p_db_set_info->p_set_name, p_db_set_info->set_name_size, p_db_record_info->db_record.p_key, p_db_record_info->db_record_properties.key_size);
     // check if index existed.
     if (!Index_Api_Index_Key_Exist(p_index_key))
     {
@@ -3074,7 +3189,7 @@ uint32_t make_db_record_index(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_
 void insert_db_record_index(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_db_record_info, DB_INDEX_PAYLOAD_T *p_db_index_payload)
 {
     // TODO: toString(p_set_name) and toString(p_key)
-    char *p_index_key = set_db_index_key(p_db_set_info->db_set_properties.p_set_name, p_db_set_info->db_set_properties.set_name_size, p_db_record_info->db_record.p_key, p_db_record_info->db_record_properties.key_size);
+    char *p_index_key = set_db_index_key(p_db_set_info->p_set_name, p_db_set_info->set_name_size, p_db_record_info->db_record.p_key, p_db_record_info->db_record_properties.key_size);
     void *p_record_value = p_db_record_info->db_record.p_value;
     void *p_index_id = NULL;
     INDEX_ID_TYPE_E index_id_type = get_db_index_id_type(p_db_record_info->db_record_properties.record_value_type);
@@ -3110,7 +3225,7 @@ void insert_db_record_index(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_db
 
 void search_db_data_indexed(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_target_db_record_info, FACILEDB_RECORD_VALUE_TYPE_COMPARE_RESULT_E compare_type, DB_DATA_INFO_LIST_ENTRY_T *p_result_db_data_list_entry)
 {
-    char *p_index_key = set_db_index_key(p_db_set_info->db_set_properties.p_set_name, p_db_set_info->db_set_properties.set_name_size, p_target_db_record_info->db_record.p_key, p_target_db_record_info->db_record_properties.key_size);
+    char *p_index_key = set_db_index_key(p_db_set_info->p_set_name, p_db_set_info->set_name_size, p_target_db_record_info->db_record.p_key, p_target_db_record_info->db_record_properties.key_size);
     void *p_record_value = p_target_db_record_info->db_record.p_value;
     void *p_index_id = NULL;
     HASH_VALUE_T hash_value = 0;
@@ -3156,7 +3271,7 @@ void search_db_data_indexed(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_ta
             db_block_init(&db_block);
 
             // read attribute only for checking delete flag and first block flag.
-            if(read_db_block_attributes(p_db_set_info, p_result_index_payloads[i].start_db_block_tag, &db_block) <= 0)
+            if (read_db_block_attributes(p_db_set_info, p_result_index_payloads[i].start_db_block_tag, &db_block) <= 0)
             {
                 assert(false);
             }
