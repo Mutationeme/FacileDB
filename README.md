@@ -17,315 +17,37 @@ FacileDB aims for portability and a minimal footprint, making it a good fit for 
 - recovery: delete
 - Discuss: mmap
 
+
 ---
 
+```mermaid
+graph TD;
 
-## Version2
-FacileDB Crash Recovery Policy
+A[Read Header A & B]
+A --> B{Header A valid?}
+A --> C{Header B valid?}
 
-This document describes the crash recovery guarantees and procedures of FacileDB.
-The goal is to ensure atomic record-level commits, deterministic recovery, and minimal recovery cost, without requiring a separate WAL file.
+B --> D{Both headers valid?}
+C --> D
 
-1. Design Principles
+D -->|yes| E["Select candidate (max commit_seq)<br/>backup = other"]
+D -->|no| F{Only one header valid?}
 
-1.1 Commit Granularity
-	•	The commit unit is a logical record, not an individual data block.
-	•	A record may consist of one or more data blocks.
-	•	Partial records are never visible after recovery.
+F -->|yes| G[Use the valid header as candidate]
+F -->|no| Z[Fail: DB corrupted]
 
-1.2 Append-Only Data Region
-	•	All inserts are append-only.
-	•	Existing data blocks are never overwritten during insert.
-	•	Physical truncation is only performed during recovery.
+E --> H{Candidate last record valid?}
+G --> H
 
-1.3 Header-Based Commit
-	•	FacileDB uses two redundant headers (Header A / Header B).
-	•	Only one header is updated per commit.
-	•	A header update represents the intent to commit a record.
-	•	A commit is considered durable only after:
-	•	all record data blocks are persisted, and
-	•	the updated header is persisted.
+H -->|yes| I[Success]
 
-1.4 Data Integrity First
-	•	Data integrity always takes precedence over header state.
-	•	A header pointing to invalid data is treated as uncommitted.
+H -->|no| J{Backup exists?}
 
-2. On-Disk Layout Overview
+J -->|yes| K{Backup last record valid?}
+J -->|no| Z
+
+K -->|yes| L[Truncate to backup.record_end]
+L --> I
+
+K -->|no| Z
 ```
-+------------------+
-| Header A         |
-+------------------+
-| Header B         |
-+------------------+
-| Data Region      |
-|  Record 1        |
-|  Record 2        |
-|  Record 3        |
-|  ...             |
-+------------------+
-```
-
-3. Header Structure Requirements
-
-Each header MUST include:
-	•	magic
-	•	version
-	•	record_count
-	•	record_end_offset (byte offset of the end of last committed record)
-	•	modified_time or sequence number
-	•	header_checksum (CRC over all header fields except itself)
-
-A header is considered valid only if:
-	•	magic matches
-	•	version is supported
-	•	checksum is correct
-
-4. Record Structure Requirements
-
-4.1 Record Header
-
-Each record MUST contain a self-describing record header:
-	•	record_magic
-	•	record_id
-	•	total_record_length (header + all blocks)
-	•	record_checksum (CRC over full payload)
-
-4.2 Record Integrity
-
-A record is considered valid only if:
-	•	record_magic is correct
-	•	total_record_length does not exceed file bounds
-	•	record_checksum matches the payload
-
-5. Recovery Procedure
-
-Recovery is performed in three phases.
-Phase 1: Header Selection
-	1.	Read Header A and Header B.
-	2.	Validate both headers using checksum.
-	3.	Select the Candidate Header:
-		•	If both headers are valid, choose the one with the newer modified_time.
-		•	If only one header is valid, choose the valid one.
-		•	If neither header is valid, the database is considered corrupted.
-	4.	The other valid header (if any) becomes the Backup Header.
-Phase 2: Record Integrity Verification
-	1.	Use Candidate.record_end_offset to locate the last committed record.
-	2.	Read the record header.
-	3.	Validate:
-	•	record_magic
-	•	total_record_length
-	•	record_checksum
-Phase 3: Decision and Repair
-
-Case 1: Last Record Is Valid
-	•	Recovery succeeds.
-	•	The database state represented by the Candidate Header is accepted.
-Case 2: Last Record Is Invalid
-	•	The last record is treated as uncommitted.
-	•	Recovery falls back to the Backup Header.
-	•	The database file is truncated to Backup.record_end_offset.
-	•	The header state is restored to the Backup Header.
-
-6. Crash Scenarios Covered
-
-This recovery policy correctly handles:
-	•	Power loss during record write
-	•	Torn write of record blocks
-	•	Crash between data fsync and header fsync
-	•	Partial or corrupted header writes
-	•	OS or disk write reordering
-
-7. Guarantees
-
-FacileDB guarantees:
-	•	Atomicity: a record is either fully committed or not visible.
-	•	Durability: once committed, a record will survive crashes.
-	•	Consistency: headers and data region are always reconciled during recovery.
-	•	O(1) Recovery Cost: only the last record is verified.
-
-8. Non-Goals
-	•	Partial record salvage is intentionally not supported.
-	•	Record-level update and delete may introduce additional mechanisms (e.g., delete logs or flags), but do not change the core recovery model.
-
-9. Summary
-
-FacileDB implements a header-commit, record-atomic recovery model:
-	•	Headers declare commit intent.
-	•	Records prove commit validity.
-	•	Data integrity always overrides metadata.
-
-This design avoids the complexity of traditional WAL while maintaining strong crash recovery guarantees.
-
------
-
-Insert
-```
-1. append record blocks
-2. fsync(data)
-3. write inactive header
-4. fsync(header)
-```
-
-	•	雙 header（A / B）
-	•	Recovery = 驗證 header → 驗證最後一筆 record → 必要時 fallback + truncate
-
-Crash Point → Recovery Action Matrix
--  Case 0：Crash before any new write
-狀態
-	•	沒有新 record
-	•	header A / B 都正常
-
-Recovery
-	•	選最新 header
-	•	record 驗證通過
-	•	無 truncate
-
-無資料遺失
-正常啟動
-
-Case 1：Crash during record append（某 block 尚未寫完）
-```
-append block 1
-append block 2
-append block 3 (partial)
-CRASH
-```
-磁碟狀態
-	•	record 不完整
-	•	header 尚未更新（仍指向舊 record）
-
-Recovery
-	1.	選舊 header（valid）
-	2.	驗證最後 committed record → OK
-	3.	truncate(file, header.record_end)
-
-不會誤認 partial record
-partial blocks 被清掉
-最新 record 遺失（預期行為）
-
-Case 2：Record 完整寫完，但尚未 fsync(data)
-```
-append full record
-CRASH
-```
-
-因為沒有 fsync
-
-可能狀態：
-	•	record 有
-	•	record 沒有
-	•	record 半有
-
-Recovery
-	•	header 尚未更新
-	•	recovery 使用舊 header
-	•	truncate 到舊 record_end
-
-安全
-record 視為未 commit（正確）
-
-Case 3：Record fsync 完成，Header 尚未寫
-```
-append record
-fsync(data)
-CRASH
-```
-
-磁碟狀態
-	•	record 完整
-	•	header 尚未更新
-
-Recovery
-	•	header 仍指向舊 record
-	•	truncate(file, old_record_end)
-
-record 被丟棄（未 commit）
-邏輯正確
-
-Case 4：Header 寫到一半（torn header）
-```
-append record
-fsync(data)
-write header (partial)
-CRASH
-```
-
-磁碟狀態
-	•	record 完整
-	•	header corrupted
-
-Recovery
-	1.	驗證 header checksum → fail
-	2.	fallback to backup header
-	3.	truncate 到 backup.record_end
-
-record 被丟棄
-corrupted header 不會被使用
-
-Case 5：Header 完整寫入，但尚未 fsync
-```
-append record
-fsync(data)
-write header
-CRASH (before fsync header)
-```
-
-可能狀態：
-	•	header 寫入成功
-	•	header 未真正落盤
-
-Recovery
-	•	若 header checksum valid 且較新 → candidate
-	•	驗證 record
-
-→ 若 record OK → commit 成功
-→ 若 record fail → fallback
-
-安全
-commit 成功與否取決於是否實際落盤
-
-Case 6：Header fsync 完成（正常 commit）
-```
-append record
-fsync(data)
-write header
-fsync(header)
-CRASH
-```
-磁碟狀態
-	•	record 完整
-	•	header 完整
-
-Recovery
-	1.	選新 header
-	2.	驗證最後 record
-	3.	OK → 啟動
-
-commit 成功
-無資料遺失
-
-Case 7：Data reorder（極端 ordering 問題）
-假設：
-	•	header 先落盤
-	•	data 尚未落盤（理論上不應發生，但某些系統可能 reorder）
-
-Recovery
-	1.	選新 header
-	2.	驗證 record
-	3.	record checksum fail
-	4.	fallback
-	5.	truncate
-
-不會誤認未完整 record
-ordering 問題被 record checksum 擋住
-
-Case 8：兩個 header 都 valid 但其中一個指到壞 record
-
-Recovery
-	1.	選較新 header
-	2.	驗證 record
-	3.	fail → fallback
-	4.	truncate
-
-正確回滾
-永遠不會信任壞資料

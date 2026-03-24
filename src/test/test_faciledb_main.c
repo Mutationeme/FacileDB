@@ -164,7 +164,8 @@ void test_faciledb_insert_case1()
         assert(db_set_info.file != NULL);
 
         // check db_set_properties.
-        read_and_check_db_set_properties_region(&db_set_info);
+        read_and_check_db_set_file_format(&db_set_info);
+        check_db_set_name(&db_set_info);
         db_set_info_init(&expected_db_set_info);
         expected_db_set_info.db_set_properties.block_num = 1;
         expected_db_set_info.db_set_properties.data_num = 1;
@@ -192,9 +193,11 @@ void test_faciledb_insert_case1()
         check_faciledb_block(&db_block, &expected_db_block);
 
         // check the db records
+        
+        DB_DATA_INFO_T db_data_info;
+        db_data_info_init(&db_data_info);
+        extract_db_data_info_from_db_blocks(&db_data_info, 1, &db_set_info);
         // clang-format off
-        uint32_t record_num = 0;
-        DB_RECORD_INFO_T *p_db_records_info = extract_db_record_info_from_db_blocks(1, &db_set_info, &record_num);
         DB_RECORD_INFO_T expected_db_record = {
             .db_record = (DB_RECORD_T){
                 .p_key = data.p_data_records->p_key,
@@ -209,12 +212,8 @@ void test_faciledb_insert_case1()
             .db_record_properties_offset = get_db_block_offset(&db_set_info, 1) + (((uint64_t)&expected_db_block.block_data) - ((uint64_t)&expected_db_block))
         };
         // clang-format on
-        check_faciledb_records(p_db_records_info, record_num, &expected_db_record, 1);
-        for (uint32_t i = 0; i < record_num; i++)
-        {
-            free_db_record_info_resources(&(p_db_records_info[i]));
-        }
-        Mema_Api_Free(MEMA_USER_FACILEDB, p_db_records_info);
+        check_faciledb_records(db_data_info.p_db_record_info, db_data_info.record_num, &expected_db_record, 1);
+        free_db_data_info_resources(&db_data_info);
         fclose(db_set_info.file);
 
         assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_FACILEDB) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_FACILEDB) == 0);
@@ -273,7 +272,7 @@ void test_faciledb_insert_case2()
         assert(db_set_info.file != NULL);
 
         // check db_set_properties.
-        read_and_check_db_set_properties_region(&db_set_info);
+        read_and_check_db_set_file_format(&db_set_info);
         db_set_info_init(&expected_db_set_info);
         expected_db_set_info.db_set_properties = (DB_SET_PROPERTIES_T){
             .block_num = 1,
@@ -303,9 +302,10 @@ void test_faciledb_insert_case2()
         check_faciledb_block(&db_block, &expected_db_block);
 
         // check the db records
+        DB_DATA_INFO_T db_data_info;
+        db_data_info_init(&db_data_info);
+        extract_db_data_info_from_db_blocks(&db_data_info, 1, &db_set_info);
         // clang-format off
-        uint32_t record_num = 0;
-        DB_RECORD_INFO_T *p_db_records_info = extract_db_record_info_from_db_blocks(1, &db_set_info, &record_num);
         DB_RECORD_INFO_T expected_db_record = {
             .db_record = (DB_RECORD_T){
                 .p_key = data.p_data_records->p_key,
@@ -320,13 +320,8 @@ void test_faciledb_insert_case2()
             .db_record_properties_offset = get_db_block_offset(&db_set_info, 1) + (((uint64_t)&expected_db_block.block_data) - ((uint64_t)&expected_db_block))
         };
         // clang-format on
-        check_faciledb_records(p_db_records_info, record_num, &expected_db_record, 1);
-        // free resources
-        for (uint32_t i = 0; i < record_num; i++)
-        {
-            free_db_record_info_resources(&(p_db_records_info[i]));
-        }
-        Mema_Api_Free(MEMA_USER_FACILEDB, p_db_records_info);
+        check_faciledb_records(db_data_info.p_db_record_info, db_data_info.record_num, &expected_db_record, 1);
+        free_db_data_info_resources(&db_data_info);
         fclose(db_set_info.file);
 
         assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_FACILEDB) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_FACILEDB) == 0);
@@ -409,7 +404,7 @@ void test_faciledb_insert_case4()
         assert(db_set_info.file != NULL);
 
         // check db_set_properties.
-        read_and_check_db_set_properties_region(&db_set_info);
+        read_and_check_db_set_file_format(&db_set_info);
         db_set_info_init(&expected_db_set_info);
         expected_db_set_info.db_set_properties.block_num = 2; /// might be 3
         expected_db_set_info.db_set_properties.data_num = 2;
@@ -494,17 +489,14 @@ void test_faciledb_insert_case4()
             check_faciledb_block(&db_block, &(expected_db_blocks[i]));
 
             // check the db records
-            uint32_t record_num = 0;
             uint32_t expected_record_num = (i == 0) ? (1) : (2); // 1 record in block1 and 2 records in block2.
-            DB_RECORD_INFO_T *p_db_records_info = extract_db_record_info_from_db_blocks(expected_db_blocks[i].block_tag, &db_set_info, &record_num);
+            DB_DATA_INFO_T db_data_info;
+            db_data_info_init(&db_data_info);
+            extract_db_data_info_from_db_blocks(&db_data_info, expected_db_blocks[i].block_tag, &db_set_info);
 
-            check_faciledb_records(p_db_records_info, record_num, &(expected_db_records[i]), expected_record_num);
+            check_faciledb_records(db_data_info.p_db_record_info, db_data_info.record_num, &(expected_db_records[i]), expected_record_num);
 
-            for (uint32_t i = 0; i < record_num; i++)
-            {
-                free_db_record_info_resources(&(p_db_records_info[i]));
-            }
-            Mema_Api_Free(MEMA_USER_FACILEDB, p_db_records_info);
+            free_db_data_info_resources(&db_data_info);
         }
         fclose(db_set_info.file);
 
@@ -562,7 +554,7 @@ void test_faciledb_insert_case3()
         assert(db_set_info.file != NULL);
 
         // check db_set_properties.
-        read_and_check_db_set_properties_region(&db_set_info);
+        read_and_check_db_set_file_format(&db_set_info);
         db_set_info_init(&expected_db_set_info);
         uint32_t expected_block_num = (get_db_record_properties_size() + data.p_data_records->key_size + data.p_data_records->value_size) / FACILEDB_BLOCK_DATA_SIZE;
         expected_block_num += (((get_db_record_properties_size() + data.p_data_records->key_size + data.p_data_records->value_size) % FACILEDB_BLOCK_DATA_SIZE) != 0) ? (1) : (0);
@@ -607,8 +599,9 @@ void test_faciledb_insert_case3()
         }
 
         // check the db records
-        uint32_t record_num = 0;
-        DB_RECORD_INFO_T *p_db_records_info = extract_db_record_info_from_db_blocks(1, &db_set_info, &record_num);
+        DB_DATA_INFO_T db_data_info;
+        db_data_info_init(&db_data_info);
+        extract_db_data_info_from_db_blocks(&db_data_info, 1, &db_set_info);
         // clang-format off
         DB_RECORD_INFO_T expected_db_record = {
             .db_record = (DB_RECORD_T){
@@ -624,13 +617,9 @@ void test_faciledb_insert_case3()
             .db_record_properties_offset = get_db_block_offset(&db_set_info, 1) + (((uint64_t)&(expected_db_block[0].block_data)) - ((uint64_t)&(expected_db_block[0])))
         };
         // clang-format on
-        check_faciledb_records(p_db_records_info, record_num, &expected_db_record, 1);
+        check_faciledb_records(db_data_info.p_db_record_info, db_data_info.record_num, &expected_db_record, 1);
         // free resources
-        for (uint32_t i = 0; i < record_num; i++)
-        {
-            free_db_record_info_resources(&(p_db_records_info[i]));
-        }
-        Mema_Api_Free(MEMA_USER_FACILEDB, p_db_records_info);
+        free_db_data_info_resources(&db_data_info);
         fclose(db_set_info.file);
 
         assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_FACILEDB) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_FACILEDB) == 0);
@@ -712,7 +701,7 @@ void test_faciledb_insert_case5()
         assert(db_set_info.file != NULL);
 
         // check db_set_properties.
-        read_and_check_db_set_properties_region(&db_set_info);
+        read_and_check_db_set_file_format(&db_set_info);
         expected_db_set_info.db_set_properties.block_num = 3;
         expected_db_set_info.db_set_properties.data_num = 2;
         expected_db_set_info.set_name_size = strlen(db_set_name);
@@ -808,35 +797,24 @@ void test_faciledb_insert_case5()
         // check the db records
 
         // Record [0]
-        uint32_t record_num;
         uint32_t expected_record_num;
-        DB_RECORD_INFO_T *p_db_records_info = NULL;
+        DB_DATA_INFO_T db_data_info;
+        db_data_info_init(&db_data_info);
 
         // Record [0]
-        record_num = 0;
         expected_record_num = 1; // 1 record in block_tag: 1.
-        p_db_records_info = extract_db_record_info_from_db_blocks(expected_db_blocks[0].block_tag, &db_set_info, &record_num);
-
-        check_faciledb_records(p_db_records_info, record_num, &(expected_db_records[0]), expected_record_num);
-
-        for (uint32_t i = 0; i < record_num; i++)
-        {
-            free_db_record_info_resources(&(p_db_records_info[i]));
-        }
-        Mema_Api_Free(MEMA_USER_FACILEDB, p_db_records_info);
+        extract_db_data_info_from_db_blocks(&db_data_info, expected_db_blocks[0].block_tag, &db_set_info);
+        check_faciledb_records(db_data_info.p_db_record_info, db_data_info.record_num, &(expected_db_records[0]), expected_record_num);
+        free_db_data_info_resources(&db_data_info);
 
         // Record [1] and [2]
-        record_num = 0;
         expected_record_num = 2; // 2 records in block_tag: 3.
-        p_db_records_info = extract_db_record_info_from_db_blocks(expected_db_blocks[2].block_tag, &db_set_info, &record_num);
+        db_data_info_init(&db_data_info);
+        extract_db_data_info_from_db_blocks(&db_data_info, expected_db_blocks[2].block_tag, &db_set_info);
 
-        check_faciledb_records(p_db_records_info, record_num, &(expected_db_records[1]), expected_record_num);
+        check_faciledb_records(db_data_info.p_db_record_info, db_data_info.record_num, &(expected_db_records[1]), expected_record_num);
 
-        for (uint32_t i = 0; i < record_num; i++)
-        {
-            free_db_record_info_resources(&(p_db_records_info[i]));
-        }
-        Mema_Api_Free(MEMA_USER_FACILEDB, p_db_records_info);
+        free_db_data_info_resources(&db_data_info);
         fclose(db_set_info.file);
 
         assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_FACILEDB) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_FACILEDB) == 0);
