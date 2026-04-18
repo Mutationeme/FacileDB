@@ -9,17 +9,11 @@
 #include <stddef.h>
 #include <errno.h>
 
-#include "faciledb.h"
 #include "faciledb_utils.h"
 #include "mema.h"
 #include "faciledb_record_value_type.h"
 #include "crc.h"
-
-#if defined(_POSIX_VERSION)
-#define IS_POSIX_API_SUPPORT (1)
-#else
-#define IS_POSIX_API_SUPPORT (0)
-#endif
+#include "faciledb_internal.h"
 
 #if IS_POSIX_API_SUPPORT
 #include <fcntl.h>
@@ -50,117 +44,7 @@
 #define DB_FILE_OPEN_CHECK_TIMEOUT (30)
 #define DB_FILE_OPEN_CHECK_INTERVAL_US (100000) // 100ms
 
-// Enum definition
-typedef enum
-{
-    DB_CONTEXT_STATUS_UNUSED,
-    DB_CONTEXT_STATUS_INITIALIZING,
-    DB_CONTEXT_STATUS_CLOSING,
-    DB_CONTEXT_STATUS_READY
-} DB_CONTEXT_STATUS_E;
-
-typedef enum
-{
-    DB_SET_INFO_STATUS_RELEASED,
-    DB_SET_INFO_STATUS_STARTING,
-    DB_SET_INFO_STATUS_CLOSING,
-    DB_SET_INFO_STATUS_READY,
-    DB_SET_INFO_STATUS_WRITING,
-    DB_SET_INFO_STATUS_READING,
-} DB_SET_INFO_STATUS_E;
-
 // Structure definition
-typedef struct
-{
-    uint32_t deleted;
-    uint32_t key_size;
-    uint32_t value_size;
-    union
-    {
-        FACILEDB_RECORD_VALUE_TYPE_E record_value_type;
-        uint32_t record_value_type_32;
-    };
-} DB_RECORD_PROPERTIES_T;
-
-// Record: A key-value pair
-typedef struct
-{
-    void *p_key;
-    void *p_value;
-} DB_RECORD_T;
-
-typedef struct
-{
-    DB_RECORD_PROPERTIES_T db_record_properties;
-    DB_RECORD_T db_record;
-    off_t db_record_properties_offset; // The offset value from the block data starting address to the record properties address.
-} DB_RECORD_INFO_T;
-
-typedef struct
-{
-    uint64_t data_tag;
-    uint64_t start_db_block_tag;
-    uint64_t created_time;
-    uint64_t modified_time;
-    uint32_t record_num;
-    uint32_t deleted;
-    DB_RECORD_INFO_T *p_db_record_info;
-} DB_DATA_INFO_T;
-
-typedef struct DB_DATA_INFO_LIST_NODE_T
-{
-    DB_DATA_INFO_T db_data_info;
-    struct DB_DATA_INFO_LIST_NODE_T *p_prev;
-    struct DB_DATA_INFO_LIST_NODE_T *p_next;
-} DB_DATA_INFO_LIST_NODE_T;
-
-typedef struct
-{
-    uint32_t list_length;
-    DB_DATA_INFO_LIST_NODE_T *p_head;
-    DB_DATA_INFO_LIST_NODE_T *p_tail;
-} DB_DATA_INFO_LIST_ENTRY_T;
-
-typedef struct
-{
-    uint64_t block_tag; // 1-based number, block_tag = 0 means null
-    uint64_t data_tag;  // 1-based number
-    uint64_t prev_block_tag;
-    uint64_t next_block_tag;
-    uint64_t created_time;
-    uint64_t modified_time;
-    uint32_t deleted;
-    uint32_t valid_record_num;   // data based
-    uint32_t record_crc32;       // foreach (RECORD_PROPERTIES_T + RECORD_T) whose delete flag is not 0.
-    uint32_t block_header_crc32; // crc32 of the above values (doesn't include block_crc32 itself)
-
-    uint8_t block_data[FACILEDB_BLOCK_DATA_SIZE]; // store db_records.
-} DB_BLOCK_T;
-
-typedef struct DB_BLOCK_LIST_NODE_T
-{
-    DB_BLOCK_T db_block;
-    struct DB_BLOCK_LIST_NODE_T *p_prev;
-    struct DB_BLOCK_LIST_NODE_T *p_next;
-} DB_BLOCK_LIST_NODE_T;
-
-typedef struct DB_BLOCK_LIST_ENTRY_T
-{
-    uint32_t list_length;
-    DB_BLOCK_LIST_NODE_T *p_head;
-    DB_BLOCK_LIST_NODE_T *p_tail;
-} DB_BLOCK_LIST_ENTRY_T;
-
-typedef struct
-{
-    uint64_t seq_num; // // Monotonically increasing sequence used to determine the latest valid header during recovery.
-    uint64_t block_num;
-    uint64_t created_time;
-    uint64_t modified_time;
-    uint64_t data_num;
-    uint32_t crc32; // crc32 of the above values (doesn't include crc32 itself)
-} DB_SET_PROPERTIES_T;
-
 typedef struct
 {
     DB_SET_PROPERTIES_T db_set_properties_list[DB_SET_PROPERTIES_NUM];
@@ -168,31 +52,6 @@ typedef struct
     uint32_t set_name_size;
     void *p_set_name;
 } DB_SET_PROPERTIES_REGION_T;
-
-typedef struct
-{
-#if IS_POSIX_API_SUPPORT
-    pthread_mutex_t mutex;
-    pthread_cond_t read_cond;
-    pthread_cond_t write_cond;
-    pthread_cond_t close_cond;
-#endif
-    uint32_t writer_waiting_count;
-    uint32_t reader_waiting_count;
-    uint32_t reader_count;
-} DB_SET_INFO_SYNC_T;
-
-typedef struct
-{
-    DB_SET_INFO_STATUS_E status;
-    DB_SET_INFO_SYNC_T db_set_info_sync;
-
-    FILE *file;
-
-    DB_SET_PROPERTIES_T db_set_properties;
-    uint32_t set_name_size;
-    void *p_set_name;
-} DB_SET_INFO_T;
 
 typedef struct
 {
@@ -235,43 +94,19 @@ static DB_SET_INFO_T db_set_info_instance[DB_SET_INFO_INSTANCE_NUM] = {
 // End of static vaiables
 
 // Local function declaration
-static inline void lock_db_context_sync();
-static inline void unlock_db_context_sync();
-void update_db_context_status(DB_CONTEXT_STATUS_E new_status);
-static inline bool check_db_context_status(DB_CONTEXT_STATUS_E target_status);
-bool set_db_directory_path(char *p_db_directory_path);
-void clear_db_directory_path();
-
 void db_set_info_instances_init();
 DB_SET_INFO_T *request_and_lock_released_db_set_info_instance();
 DB_SET_INFO_T *query_and_lock_db_set_info_loaded(char *p_db_set_name_string);
-DB_SET_INFO_T *load_and_lock_db_set_info(char *p_db_set_name);
 bool load_and_lock_db_set_info_handler_check_and_deep_copy_set_name(DB_SET_INFO_T *p_db_set_info, uint8_t *p_set_name, uint32_t set_name_size);
-void close_db_set_info_instances();
 void create_new_db_set_file_format(DB_SET_INFO_T *p_db_set_info, uint8_t *p_db_set_name, uint32_t db_set_name_size);
 bool read_and_check_db_set_file_format(DB_SET_INFO_T *p_db_set_info);
 
 void db_set_info_init(DB_SET_INFO_T *p_db_set_info);
-bool is_db_set_file_exist(char *p_db_set_file_path);
-void get_db_set_file_path_by_db_set_name(char *p_db_set_name, char *p_db_set_file_path);
 void allocate_db_set_info_resources(DB_SET_INFO_T *p_db_set_info);
 void free_db_set_info_resources(DB_SET_INFO_T *p_db_set_info);
 void close_db_set_info(DB_SET_INFO_T *p_db_set_info);
 void db_set_info_sync_init(DB_SET_INFO_SYNC_T *p_db_set_info_sync);
-void sync_latest_db_set_info(DB_SET_INFO_T *p_db_set_info);
-static inline void db_set_info_file_lock_write(DB_SET_INFO_T *p_db_set_info);
-static inline void db_set_info_file_unlock_write(DB_SET_INFO_T *p_db_set_info);
-static inline void db_set_info_file_lock_read(DB_SET_INFO_T *p_db_set_info);
-static inline void db_set_info_file_unlock_read(DB_SET_INFO_T *p_db_set_info);
-static inline void lock_db_set_info_sync(DB_SET_INFO_T *p_db_set_info);
-static inline void unlock_db_set_info_sync(DB_SET_INFO_T *p_db_set_info);
 static inline void db_set_info_sync_close_wait(DB_SET_INFO_T *p_db_set_info);
-static inline void db_set_info_sync_write_wait(DB_SET_INFO_T *p_db_set_info);
-static inline void db_set_info_sync_write_unblock(DB_SET_INFO_T *p_db_set_info);
-static inline void db_set_info_sync_read_wait(DB_SET_INFO_T *p_db_set_info);
-static inline void db_set_info_sync_read_unblock(DB_SET_INFO_T *p_db_set_info);
-void update_db_set_info_status(DB_SET_INFO_T *p_db_set_info, DB_SET_INFO_STATUS_E new_status);
-void update_db_set_info_status_from_reading(DB_SET_INFO_T *p_db_set_info);
 static inline bool check_db_set_info_status(DB_SET_INFO_T *p_db_set_info, DB_SET_INFO_STATUS_E target_status);
 
 void db_set_properties_init(DB_SET_PROPERTIES_T *p_db_set_properties);
@@ -283,366 +118,27 @@ void write_raw_db_set_properties(DB_SET_INFO_T *p_db_set_info, DB_SET_PROPERTIES
 void write_db_set_properties_region(DB_SET_INFO_T *p_db_set_info, DB_SET_PROPERTIES_REGION_T *p_db_set_properties_region);
 uint32_t read_db_set_properties(DB_SET_INFO_T *p_db_set_info, DB_SET_PROPERTIES_T *p_db_set_properties, uint32_t db_set_properties_index);
 uint32_t get_earlist_db_set_properties_index(DB_SET_INFO_T *p_db_set_info);
-void update_to_db_set_properties_region(DB_SET_INFO_T *p_db_set_info);
 bool get_latest_db_set_properties(DB_SET_INFO_T *p_db_set_info, DB_SET_PROPERTIES_T *p_db_set_properties);
 bool get_previous_db_set_properties(DB_SET_INFO_T *p_db_set_info, DB_SET_PROPERTIES_T *p_db_set_properties, uint64_t seq_num);
 bool check_db_set_name(DB_SET_INFO_T *p_db_set_info);
 
-void db_block_init(DB_BLOCK_T *p_db_block);
 off_t get_db_block_offset(DB_SET_INFO_T *p_db_set_info, uint64_t block_tag);
 size_t get_db_block_size();
-void write_db_block(DB_BLOCK_T *p_db_block, DB_SET_INFO_T *p_db_set_info);
-uint32_t read_db_block(DB_SET_INFO_T *p_db_set_info, uint64_t block_tag, DB_BLOCK_T *p_db_block);
-uint32_t read_db_block_attributes(DB_SET_INFO_T *p_db_set_info, uint64_t block_tag, DB_BLOCK_T *p_db_block);
-void db_block_list_entry_init(DB_BLOCK_LIST_ENTRY_T *p_entry);
-void db_block_list_node_init(DB_BLOCK_LIST_NODE_T *p_node);
-void append_db_block_list_node_to_tail(DB_BLOCK_LIST_ENTRY_T *p_entry, DB_BLOCK_LIST_NODE_T *p_node);
 
-void db_record_info_init(DB_RECORD_INFO_T *p_db_record_info);
 bool allocate_db_record_info_resources(DB_RECORD_INFO_T *p_db_record_info);
 void free_db_record_info_resources(DB_RECORD_INFO_T *p_db_record_info);
 bool faciledb_record_to_db_record_info(FACILEDB_RECORD_T *p_faciledb_record, DB_RECORD_INFO_T *p_db_record_info);
-void shallow_assign_faciledb_record_to_db_record_info(DB_RECORD_INFO_T *p_db_record_info, FACILEDB_RECORD_T *p_faciledb_record);
 void shallow_assign_db_record_info_to_faciledb_record(FACILEDB_RECORD_T *p_faciledb_record, DB_RECORD_INFO_T *p_db_record_info);
-size_t get_db_record_properties_size();
 
-void db_data_info_init(DB_DATA_INFO_T *p_db_data_info);
-void free_db_data_info_resources(DB_DATA_INFO_T *p_db_data_info);
 void shallow_copy_db_data_info(DB_DATA_INFO_T *p_dest_db_data_info, DB_DATA_INFO_T *p_src_db_data_info);
-bool shallow_assign_db_data_info_to_failedb_data(FACILEDB_DATA_T *p_faciledb_data, DB_DATA_INFO_T *p_db_data_info);
-bool shallow_assign_faciledb_data_to_db_data_info(DB_DATA_INFO_T *p_db_data_info, FACILEDB_DATA_T *p_faciledb_data);
 bool check_last_db_data_info(DB_SET_INFO_T *p_db_set_info);
 
-void db_data_info_list_node_init(DB_DATA_INFO_LIST_NODE_T *p_node);
-void free_db_data_info_list_node_resources(DB_DATA_INFO_LIST_NODE_T *p_node);
-void db_data_info_list_entry_init(DB_DATA_INFO_LIST_ENTRY_T *p_entry);
-void free_db_data_info_list(DB_DATA_INFO_LIST_ENTRY_T *p_entry);
-
-uint32_t insert_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_T *p_db_data_info, uint64_t data_tag);
-void search_db_data_sequential(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_target_db_record_info, FACILEDB_RECORD_VALUE_TYPE_COMPARE_RESULT_E compare_type, DB_DATA_INFO_LIST_ENTRY_T *p_result_db_data_info_list_entry);
-uint32_t insert_db_data_handler_write_db_block_list(DB_SET_INFO_T *p_db_set_info, DB_BLOCK_LIST_ENTRY_T *p_db_block_list_entry);
-void insert_db_data_handler_assign_block_value(DB_BLOCK_T *p_db_block, DB_SET_INFO_T *p_info, uint32_t valid_record_num, uint64_t data_tag, uint32_t record_crc32);
-void insert_db_data_handler_assign_prev_next_block_tag(DB_BLOCK_LIST_ENTRY_T *p_entry, DB_BLOCK_LIST_NODE_T *p_node);
-void insert_db_data_handler_free_db_block_list(DB_BLOCK_LIST_ENTRY_T *p_db_block_list_entry);
-void search_db_data(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_target_db_record_info, FACILEDB_RECORD_VALUE_TYPE_COMPARE_RESULT_E compare_type, DB_DATA_INFO_LIST_ENTRY_T *p_result_db_data_info_list_entry);
-void delete_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_LIST_ENTRY_T *p_db_data_info_list_entry);
-
 #if ENABLE_DB_INDEX
-bool get_db_index_directory_path(char *p_db_index_directory_path);
-char *set_db_index_key(void *db_set_name, uint32_t set_name_size, void *p_key, uint32_t key_size);
-INDEX_ID_TYPE_E get_db_index_id_type(FACILEDB_RECORD_VALUE_TYPE_E record_value_type);
 uint32_t make_db_record_index(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_db_record_info);
-void insert_db_record_index(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_db_record_info, DB_INDEX_PAYLOAD_T *p_db_index_payload);
-void search_db_data_indexed(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_target_db_record_info, FACILEDB_RECORD_VALUE_TYPE_COMPARE_RESULT_E compare_type, DB_DATA_INFO_LIST_ENTRY_T *p_result_db_data_list_entry);
 #endif
-
 // End of local function declaration
 
-void FacileDB_Api_Init(char *p_db_directory_path)
-{
-    char temp_db_directory_path[FACILEDB_FILE_PATH_BUFFER_LENGTH] = {0};
-
-    strncpy(temp_db_directory_path, p_db_directory_path, FACILEDB_FILE_PATH_MAX_LENGTH);
-    temp_db_directory_path[FACILEDB_FILE_PATH_MAX_LENGTH] = '\0';
-
-    lock_db_context_sync();
-    // TODO: If re-init, close_db_set_info_instances and reset db_directory_path first.
-    if (check_db_context_status(DB_CONTEXT_STATUS_UNUSED) == false)
-    {
-        // Already initialized.
-        unlock_db_context_sync();
-        return;
-    }
-    update_db_context_status(DB_CONTEXT_STATUS_INITIALIZING);
-
-    Mema_Api_Init(MEMA_USER_FACILEDB);
-    set_db_directory_path(temp_db_directory_path);
-    // db_set_info_instances_init();
-
-#if ENABLE_DB_INDEX
-    char temp_db_index_directory_path[INDEX_FILE_PATH_BUFFER_LENGTH] = {0};
-    get_db_index_directory_path(temp_db_index_directory_path);
-    // The db_index_directory_path must be set before calling this function.
-    Index_Api_Init(temp_db_index_directory_path);
-#endif
-
-    update_db_context_status(DB_CONTEXT_STATUS_READY);
-    unlock_db_context_sync();
-}
-
-void FacileDB_Api_Close()
-{
-    lock_db_context_sync();
-    if (check_db_context_status(DB_CONTEXT_STATUS_READY) == false)
-    {
-        // Not initialized or already closed.
-        unlock_db_context_sync();
-        return;
-    }
-    update_db_context_status(DB_CONTEXT_STATUS_CLOSING);
-
-    close_db_set_info_instances();
-    clear_db_directory_path();
-
-#if ENABLE_DB_INDEX
-    Index_Api_Close();
-#endif
-
-    update_db_context_status(DB_CONTEXT_STATUS_UNUSED);
-    unlock_db_context_sync();
-}
-
-bool FacileDB_Api_Check_Set_Exist(char *p_db_set_name)
-{
-    char db_set_file_path[FACILEDB_FILE_PATH_BUFFER_LENGTH] = {0};
-    bool existed = false;
-
-    lock_db_context_sync();
-
-    if (check_db_context_status(DB_CONTEXT_STATUS_READY) == true)
-    {
-        get_db_set_file_path_by_db_set_name(p_db_set_name, db_set_file_path);
-        existed = is_db_set_file_exist(db_set_file_path);
-    }
-
-    unlock_db_context_sync();
-    return existed;
-}
-
-// Return Value: Number of inserted data.
-uint32_t FacileDB_Api_Insert_Data(char *p_db_set_name, FACILEDB_DATA_T *p_faciledb_data)
-{
-    char temp_db_set_name[FACILEDB_FILE_PATH_BUFFER_LENGTH] = {0};
-    DB_SET_INFO_T *p_db_set_info = NULL;
-    uint64_t data_tag = 0;
-    DB_DATA_INFO_T db_data_info;
-
-    // Check input parameters
-    if (p_db_set_name == NULL || p_faciledb_data == NULL || p_faciledb_data->record_num == 0)
-    {
-        return 0;
-    }
-
-    lock_db_context_sync();
-    // If the db context is not ready, return directly.
-    if (check_db_context_status(DB_CONTEXT_STATUS_READY) == false)
-    {
-        unlock_db_context_sync();
-        return 0;
-    }
-
-    strncpy(temp_db_set_name, p_db_set_name, FACILEDB_FILE_PATH_MAX_LENGTH);
-    temp_db_set_name[FACILEDB_FILE_PATH_MAX_LENGTH] = '\0';
-
-    p_db_set_info = load_and_lock_db_set_info(temp_db_set_name);
-    unlock_db_context_sync();
-    if(p_db_set_info == NULL)
-    {
-        return 0;
-    }
-
-    // convert format from FACILEDB_DATA_T to DB_DATA_INFO_T
-    db_data_info_init(&db_data_info);
-    shallow_assign_faciledb_data_to_db_data_info(&db_data_info, p_faciledb_data);
-
-    db_set_info_sync_write_wait(p_db_set_info);
-    update_db_set_info_status(p_db_set_info, DB_SET_INFO_STATUS_WRITING);
-    db_set_info_file_lock_write(p_db_set_info);
-    // read db_set_properties from disk to ensure data consistency
-    // Future: mmap (?)
-    sync_latest_db_set_info(p_db_set_info);
-    unlock_db_set_info_sync(p_db_set_info);
-
-    data_tag = ++(p_db_set_info->db_set_properties.data_num);
-    insert_db_data(p_db_set_info, &db_data_info, data_tag);
-
-    lock_db_set_info_sync(p_db_set_info);
-    db_set_info_file_unlock_write(p_db_set_info);
-    update_db_set_info_status(p_db_set_info, DB_SET_INFO_STATUS_READY);
-    db_set_info_sync_write_unblock(p_db_set_info);
-    unlock_db_set_info_sync(p_db_set_info);
-
-    // free dynamic resources allocated at shallow_assign_faciledb_data_to_db_data_info.
-    Mema_Api_Free(MEMA_USER_FACILEDB, db_data_info.p_db_record_info);
-
-    return 1;
-}
-
-// return value: search result, the p_data_array will be NULL if no data found (data_num == 0).
-FACILEDB_DATA_SEARCH_RESULT_T *FacileDB_Api_Search_Equal(char *p_db_set_name, FACILEDB_RECORD_T *p_faciledb_record)
-{
-    char temp_db_set_name[FACILEDB_FILE_PATH_BUFFER_LENGTH] = {0};
-    FACILEDB_DATA_SEARCH_RESULT_T *p_faciledb_search_result = Mema_Api_Alloc(MEMA_USER_FACILEDB, sizeof(FACILEDB_DATA_SEARCH_RESULT_T));
-
-    DB_SET_INFO_T *p_db_set_info = NULL;
-    DB_RECORD_INFO_T target_db_record;
-    DB_DATA_INFO_LIST_ENTRY_T db_data_info_list_entry;
-
-    db_data_info_list_entry_init(&db_data_info_list_entry);
-
-    // default return value
-    p_faciledb_search_result->data_num = 0;
-    p_faciledb_search_result->p_data_array = NULL;
-
-    // Check input parameters
-    if (p_db_set_name == NULL || p_faciledb_record == NULL ||
-        Faciledb_Record_Value_Type_Check_Size_Valid(p_faciledb_record->record_value_type, p_faciledb_record->value_size) == false)
-    {
-        // invalid
-        return p_faciledb_search_result;
-    }
-
-    strncpy(temp_db_set_name, p_db_set_name, FACILEDB_FILE_PATH_MAX_LENGTH);
-    temp_db_set_name[FACILEDB_FILE_PATH_MAX_LENGTH] = '\0';
-
-    lock_db_context_sync();
-
-    if (check_db_context_status(DB_CONTEXT_STATUS_READY) == false)
-    {
-        // db context is not ready
-        unlock_db_context_sync();
-        return p_faciledb_search_result;
-    }
-
-    p_db_set_info = load_and_lock_db_set_info(temp_db_set_name);
-    unlock_db_context_sync();
-    if(p_db_set_info == NULL)
-    {
-        return NULL;
-    }
-
-    db_record_info_init(&target_db_record);
-    shallow_assign_faciledb_record_to_db_record_info(&target_db_record, p_faciledb_record);
-
-    db_set_info_sync_read_wait(p_db_set_info);
-    update_db_set_info_status(p_db_set_info, DB_SET_INFO_STATUS_READING);
-    db_set_info_file_lock_read(p_db_set_info);
-    sync_latest_db_set_info(p_db_set_info);
-    unlock_db_set_info_sync(p_db_set_info);
-
-    search_db_data(p_db_set_info, &target_db_record, FACILEDB_RECORD_VALUE_TYPE_COMPARE_EQUAL, &db_data_info_list_entry);
-
-    lock_db_set_info_sync(p_db_set_info);
-    db_set_info_file_unlock_read(p_db_set_info);
-    update_db_set_info_status_from_reading(p_db_set_info);
-    db_set_info_sync_read_unblock(p_db_set_info);
-    unlock_db_set_info_sync(p_db_set_info);
-
-    // Fill to faciledb structure
-    if (db_data_info_list_entry.list_length > 0)
-    {
-        p_faciledb_search_result->p_data_array = Mema_Api_Alloc(MEMA_USER_FACILEDB, db_data_info_list_entry.list_length * sizeof(FACILEDB_DATA_T));
-
-        DB_DATA_INFO_LIST_NODE_T *p_current_node = db_data_info_list_entry.p_head;
-        DB_DATA_INFO_LIST_NODE_T *p_freed_node = NULL;
-
-        for (uint32_t i = 0; i < db_data_info_list_entry.list_length; i++)
-        {
-            shallow_assign_db_data_info_to_failedb_data(&(p_faciledb_search_result->p_data_array[i]), &(p_current_node->db_data_info));
-            p_freed_node = p_current_node;
-            p_current_node = p_current_node->p_next;
-
-            // free linked-list node and record_info array, but keep db_record_info dynamic resources alive for faciledb search result.
-            Mema_Api_Free(MEMA_USER_FACILEDB, p_freed_node->db_data_info.p_db_record_info);
-            Mema_Api_Free(MEMA_USER_FACILEDB, p_freed_node);
-        }
-
-        p_faciledb_search_result->data_num = db_data_info_list_entry.list_length;
-    }
-
-    return p_faciledb_search_result;
-}
-
-// Return value: delete data number
-uint32_t FacileDB_Api_Delete_Equal(char *p_db_set_name, FACILEDB_RECORD_T *p_faciledb_record)
-{
-    char temp_db_set_name[FACILEDB_FILE_PATH_BUFFER_LENGTH] = {0};
-    DB_SET_INFO_T *p_db_set_info = NULL;
-    DB_RECORD_INFO_T target_db_record;
-    DB_DATA_INFO_LIST_ENTRY_T db_data_info_list_entry;
-    uint32_t delete_data_num = 0;
-
-    db_data_info_list_entry_init(&db_data_info_list_entry);
-
-    // Check input parameters
-    if (p_db_set_name == NULL || p_faciledb_record == NULL || Faciledb_Record_Value_Type_Check_Size_Valid(p_faciledb_record->record_value_type, p_faciledb_record->value_size) == false)
-    {
-        // invalid
-        return 0;
-    }
-
-    strncpy(temp_db_set_name, p_db_set_name, FACILEDB_FILE_PATH_MAX_LENGTH);
-    temp_db_set_name[FACILEDB_FILE_PATH_MAX_LENGTH] = '\0';
-
-    lock_db_context_sync();
-    if (check_db_context_status(DB_CONTEXT_STATUS_READY) == false)
-    {
-        // db context is not ready
-        unlock_db_context_sync();
-        return 0;
-    }
-
-    p_db_set_info = load_and_lock_db_set_info(temp_db_set_name);
-    unlock_db_context_sync();
-    if(p_db_set_info == NULL)
-    {
-        return 0;
-    }
-
-    db_record_info_init(&target_db_record);
-    shallow_assign_faciledb_record_to_db_record_info(&target_db_record, p_faciledb_record);
-
-    db_set_info_sync_write_wait(p_db_set_info);
-    update_db_set_info_status(p_db_set_info, DB_SET_INFO_STATUS_WRITING);
-    db_set_info_file_lock_write(p_db_set_info);
-    sync_latest_db_set_info(p_db_set_info);
-    unlock_db_set_info_sync(p_db_set_info);
-
-    search_db_data(p_db_set_info, &target_db_record, FACILEDB_RECORD_VALUE_TYPE_COMPARE_EQUAL, &db_data_info_list_entry);
-    // Delete the target data
-    delete_db_data(p_db_set_info, &db_data_info_list_entry);
-
-    lock_db_set_info_sync(p_db_set_info);
-    db_set_info_file_unlock_write(p_db_set_info);
-    update_db_set_info_status(p_db_set_info, DB_SET_INFO_STATUS_READY);
-    db_set_info_sync_write_unblock(p_db_set_info);
-    unlock_db_set_info_sync(p_db_set_info);
-
-    delete_data_num = db_data_info_list_entry.list_length;
-    // free result linked list
-    free_db_data_info_list(&db_data_info_list_entry);
-
-    return delete_data_num;
-}
-
-void FacileDB_Api_Free_Search_Result(FACILEDB_DATA_SEARCH_RESULT_T *p_faciledb_search_result)
-{
-    if (p_faciledb_search_result == NULL)
-    {
-        return;
-    }
-
-    for (uint32_t i = 0; i < p_faciledb_search_result->data_num; i++)
-    {
-        for (uint32_t j = 0; j < p_faciledb_search_result->p_data_array[i].record_num; j++)
-        {
-            // TODO: free faciledb_record dynamic buffer
-            Mema_Api_Free(MEMA_USER_FACILEDB, p_faciledb_search_result->p_data_array[i].p_data_records[j].p_key);
-            Mema_Api_Free(MEMA_USER_FACILEDB, p_faciledb_search_result->p_data_array[i].p_data_records[j].p_value);
-        }
-        // if data exists, record_num > 0 and p_data_records is allocated.
-        Mema_Api_Free(MEMA_USER_FACILEDB, p_faciledb_search_result->p_data_array[i].p_data_records);
-    }
-
-    if (p_faciledb_search_result->data_num != 0)
-    {
-        Mema_Api_Free(MEMA_USER_FACILEDB, p_faciledb_search_result->p_data_array);
-    }
-
-    Mema_Api_Free(MEMA_USER_FACILEDB, p_faciledb_search_result);
-}
-
-static inline void lock_db_context_sync()
+void lock_db_context_sync()
 {
 #if IS_POSIX_API_SUPPORT
     pthread_mutex_t *p_db_context_mutex = &(db_context.sync.mutex);
@@ -650,7 +146,7 @@ static inline void lock_db_context_sync()
 #endif
 }
 
-static inline void unlock_db_context_sync()
+void unlock_db_context_sync()
 {
 #if IS_POSIX_API_SUPPORT
     pthread_mutex_t *p_db_context_mutex = &(db_context.sync.mutex);
@@ -713,7 +209,7 @@ void update_db_context_status(DB_CONTEXT_STATUS_E new_status)
 }
 
 // Lock the db_context_mutex before using this function.
-static inline bool check_db_context_status(DB_CONTEXT_STATUS_E target_status)
+bool check_db_context_status(DB_CONTEXT_STATUS_E target_status)
 {
     return (db_context.status == target_status);
 }
@@ -1178,7 +674,7 @@ void sync_latest_db_set_info(DB_SET_INFO_T *p_db_set_info)
     }
 }
 
-static inline void db_set_info_file_lock_write(DB_SET_INFO_T *p_db_set_info)
+void db_set_info_file_lock_write(DB_SET_INFO_T *p_db_set_info)
 {
 #if IS_POSIX_API_SUPPORT
     int fd = fileno(p_db_set_info->file);
@@ -1201,7 +697,7 @@ static inline void db_set_info_file_lock_write(DB_SET_INFO_T *p_db_set_info)
 #endif
 }
 
-static inline void db_set_info_file_unlock_write(DB_SET_INFO_T *p_db_set_info)
+void db_set_info_file_unlock_write(DB_SET_INFO_T *p_db_set_info)
 {
 #if IS_POSIX_API_SUPPORT
     int fd = fileno(p_db_set_info->file);
@@ -1223,7 +719,7 @@ static inline void db_set_info_file_unlock_write(DB_SET_INFO_T *p_db_set_info)
 #endif
 }
 
-static inline void db_set_info_file_lock_read(DB_SET_INFO_T *p_db_set_info)
+void db_set_info_file_lock_read(DB_SET_INFO_T *p_db_set_info)
 {
     uint32_t *p_db_set_info_sync_reader_count = &(p_db_set_info->db_set_info_sync.reader_count);
 #if IS_POSIX_API_SUPPORT
@@ -1250,7 +746,7 @@ static inline void db_set_info_file_lock_read(DB_SET_INFO_T *p_db_set_info)
 #endif
 }
 
-static inline void db_set_info_file_unlock_read(DB_SET_INFO_T *p_db_set_info)
+void db_set_info_file_unlock_read(DB_SET_INFO_T *p_db_set_info)
 {
     uint32_t *p_db_set_info_sync_reader_count = &(p_db_set_info->db_set_info_sync.reader_count);
 #if IS_POSIX_API_SUPPORT
@@ -1276,7 +772,7 @@ static inline void db_set_info_file_unlock_read(DB_SET_INFO_T *p_db_set_info)
 #endif
 }
 
-static inline void lock_db_set_info_sync(DB_SET_INFO_T *p_db_set_info)
+void lock_db_set_info_sync(DB_SET_INFO_T *p_db_set_info)
 {
 #if IS_POSIX_API_SUPPORT
     pthread_mutex_t *p_mutex = &(p_db_set_info->db_set_info_sync.mutex);
@@ -1284,7 +780,7 @@ static inline void lock_db_set_info_sync(DB_SET_INFO_T *p_db_set_info)
 #endif
 }
 
-static inline void unlock_db_set_info_sync(DB_SET_INFO_T *p_db_set_info)
+void unlock_db_set_info_sync(DB_SET_INFO_T *p_db_set_info)
 {
 #if IS_POSIX_API_SUPPORT
     pthread_mutex_t *p_mutex = &(p_db_set_info->db_set_info_sync.mutex);
@@ -1309,7 +805,7 @@ static inline void db_set_info_sync_close_wait(DB_SET_INFO_T *p_db_set_info)
 #endif
 }
 
-static inline void db_set_info_sync_write_wait(DB_SET_INFO_T *p_db_set_info)
+void db_set_info_sync_write_wait(DB_SET_INFO_T *p_db_set_info)
 {
     uint32_t *p_writer_waiting_count = &(p_db_set_info->db_set_info_sync.writer_waiting_count);
 
@@ -1326,7 +822,7 @@ static inline void db_set_info_sync_write_wait(DB_SET_INFO_T *p_db_set_info)
     (*p_writer_waiting_count)--;
 }
 
-static inline void db_set_info_sync_write_unblock(DB_SET_INFO_T *p_db_set_info)
+void db_set_info_sync_write_unblock(DB_SET_INFO_T *p_db_set_info)
 {
     uint32_t *p_writer_waiting_count = &(p_db_set_info->db_set_info_sync.writer_waiting_count);
     uint32_t *p_reader_waiting_count = &(p_db_set_info->db_set_info_sync.reader_waiting_count);
@@ -1354,7 +850,7 @@ static inline void db_set_info_sync_write_unblock(DB_SET_INFO_T *p_db_set_info)
 #endif
 }
 
-static inline void db_set_info_sync_read_wait(DB_SET_INFO_T *p_db_set_info)
+void db_set_info_sync_read_wait(DB_SET_INFO_T *p_db_set_info)
 {
     uint32_t *p_reader_waiting_count = &(p_db_set_info->db_set_info_sync.reader_waiting_count);
     uint32_t *p_reader_count = &(p_db_set_info->db_set_info_sync.reader_count);
@@ -1374,7 +870,7 @@ static inline void db_set_info_sync_read_wait(DB_SET_INFO_T *p_db_set_info)
     (*p_reader_count)++;
 }
 
-static inline void db_set_info_sync_read_unblock(DB_SET_INFO_T *p_db_set_info)
+void db_set_info_sync_read_unblock(DB_SET_INFO_T *p_db_set_info)
 {
     uint32_t *p_reader_count = &(p_db_set_info->db_set_info_sync.reader_count);
     uint32_t *p_writer_waiting_count = &(p_db_set_info->db_set_info_sync.writer_waiting_count);
@@ -1805,6 +1301,39 @@ void db_block_init(DB_BLOCK_T *p_db_block)
     p_db_block->block_header_crc32 = Crc32_Api_Init();
 
     memset(p_db_block->block_data, 0, FACILEDB_BLOCK_DATA_SIZE);
+}
+
+void db_block_list_entry_init(DB_BLOCK_LIST_ENTRY_T *p_entry)
+{
+    p_entry->p_head = NULL;
+    p_entry->p_tail = NULL;
+    p_entry->list_length = 0;
+}
+
+void db_block_list_node_init(DB_BLOCK_LIST_NODE_T *p_node)
+{
+    db_block_init(&(p_node->db_block));
+    p_node->p_prev = NULL;
+    p_node->p_next = NULL;
+}
+
+void append_db_block_list_node_to_tail(DB_BLOCK_LIST_ENTRY_T *p_entry, DB_BLOCK_LIST_NODE_T *p_node)
+{
+    if (p_entry->p_head == NULL)
+    {
+        assert(p_entry->p_tail == NULL);
+        p_entry->p_head = p_node;
+        p_entry->p_tail = p_node;
+    }
+    else
+    {
+        assert(p_entry->p_tail != NULL);
+        p_entry->p_tail->p_next = p_node;
+        p_node->p_prev = p_entry->p_tail;
+        p_entry->p_tail = p_node;
+    }
+
+    p_entry->list_length++;
 }
 
 off_t get_db_block_offset(DB_SET_INFO_T *p_db_set_info, uint64_t block_tag)
@@ -2290,39 +1819,6 @@ bool extract_db_data_info_from_db_blocks(DB_DATA_INFO_T *p_db_data_info, uint64_
     return true;
 }
 
-void db_block_list_entry_init(DB_BLOCK_LIST_ENTRY_T *p_entry)
-{
-    p_entry->p_head = NULL;
-    p_entry->p_tail = NULL;
-    p_entry->list_length = 0;
-}
-
-void db_block_list_node_init(DB_BLOCK_LIST_NODE_T *p_node)
-{
-    db_block_init(&(p_node->db_block));
-    p_node->p_prev = NULL;
-    p_node->p_next = NULL;
-}
-
-void append_db_block_list_node_to_tail(DB_BLOCK_LIST_ENTRY_T *p_entry, DB_BLOCK_LIST_NODE_T *p_node)
-{
-    if (p_entry->p_head == NULL)
-    {
-        assert(p_entry->p_tail == NULL);
-        p_entry->p_head = p_node;
-        p_entry->p_tail = p_node;
-    }
-    else
-    {
-        assert(p_entry->p_tail != NULL);
-        p_entry->p_tail->p_next = p_node;
-        p_node->p_prev = p_entry->p_tail;
-        p_entry->p_tail = p_node;
-    }
-
-    p_entry->list_length++;
-}
-
 void db_record_properties_init(DB_RECORD_PROPERTIES_T *p_db_record_properties)
 {
     p_db_record_properties->deleted = 0;
@@ -2457,23 +1953,18 @@ bool check_last_db_data_info(DB_SET_INFO_T *p_db_set_info)
     return check_result;
 }
 
-void db_data_info_list_node_init(DB_DATA_INFO_LIST_NODE_T *p_node)
-{
-    db_data_info_init(&(p_node->db_data_info));
-    p_node->p_prev = NULL;
-    p_node->p_next = NULL;
-}
-
-void free_db_data_info_list_node_resources(DB_DATA_INFO_LIST_NODE_T *p_node)
-{
-    free_db_data_info_resources(&(p_node->db_data_info));
-}
-
 void db_data_info_list_entry_init(DB_DATA_INFO_LIST_ENTRY_T *p_entry)
 {
     p_entry->p_head = NULL;
     p_entry->p_tail = NULL;
     p_entry->list_length = 0;
+}
+
+void db_data_info_list_node_init(DB_DATA_INFO_LIST_NODE_T *p_node)
+{
+    db_data_info_init(&(p_node->db_data_info));
+    p_node->p_prev = NULL;
+    p_node->p_next = NULL;
 }
 
 void free_db_data_info_list(DB_DATA_INFO_LIST_ENTRY_T *p_entry)
@@ -2491,6 +1982,11 @@ void free_db_data_info_list(DB_DATA_INFO_LIST_ENTRY_T *p_entry)
 
     p_entry->p_head = NULL;
     p_entry->p_tail = NULL;
+}
+
+void free_db_data_info_list_node_resources(DB_DATA_INFO_LIST_NODE_T *p_node)
+{
+    free_db_data_info_resources(&(p_node->db_data_info));
 }
 
 void db_record_info_init(DB_RECORD_INFO_T *p_db_record_info)
@@ -2584,358 +2080,6 @@ void shallow_assign_db_record_info_to_faciledb_record(FACILEDB_RECORD_T *p_facil
 
     p_faciledb_record->p_key = p_db_record_info->db_record.p_key;
     p_faciledb_record->p_value = p_db_record_info->db_record.p_value;
-}
-
-// p_db_data_info is a pointer to a DB_DATA_INFO_T, not a pointer to an array.
-// return value: the number of inserted data.
-uint32_t insert_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_T *p_db_data_info, uint64_t data_tag)
-{
-    DB_BLOCK_LIST_ENTRY_T db_block_list_entry;
-    DB_BLOCK_LIST_NODE_T *p_db_block_list_node = NULL;
-    DB_BLOCK_T *p_db_block = NULL;
-    uint8_t *p_db_block_write = NULL;
-    uint8_t *p_db_block_end = NULL;
-    uint32_t calculated_record_crc32 = Crc32_Api_Init();
-    const size_t db_record_properties_size = get_db_record_properties_size();
-
-    db_block_list_entry_init(&db_block_list_entry);
-    p_db_block_list_node = Mema_Api_Alloc(MEMA_USER_FACILEDB, sizeof(DB_BLOCK_LIST_NODE_T));
-    db_block_list_node_init(p_db_block_list_node);
-    p_db_block = &(p_db_block_list_node->db_block);
-    p_db_block_write = p_db_block->block_data;
-    p_db_block_end = p_db_block_write + FACILEDB_BLOCK_DATA_SIZE;
-
-    // calculate the record crc32 value
-    for (uint32_t i = 0; i < (p_db_data_info->record_num); i++)
-    {
-        calculated_record_crc32 = Crc32_Api_Calc(calculated_record_crc32, &(p_db_data_info->p_db_record_info[i].db_record_properties), sizeof(DB_RECORD_PROPERTIES_T));
-        calculated_record_crc32 = Crc32_Api_Calc(calculated_record_crc32, p_db_data_info->p_db_record_info[i].db_record.p_key, p_db_data_info->p_db_record_info[i].db_record_properties.key_size);
-        calculated_record_crc32 = Crc32_Api_Calc(calculated_record_crc32, p_db_data_info->p_db_record_info[i].db_record.p_value, p_db_data_info->p_db_record_info[i].db_record_properties.value_size);
-    }
-
-    for (uint32_t i = 0; i < (p_db_data_info->record_num); i++)
-    {
-        uint32_t remaining_size = 0;
-        DB_RECORD_INFO_T *p_current_db_record_info = &p_db_data_info->p_db_record_info[i];
-
-        if ((p_db_block_write + db_record_properties_size) > p_db_block_end)
-        {
-            // Current db_block is full, append db_block_list_node into the end of the list.
-            insert_db_data_handler_assign_block_value(p_db_block, p_db_set_info, p_db_data_info->record_num, data_tag, calculated_record_crc32);
-            insert_db_data_handler_assign_prev_next_block_tag(&db_block_list_entry, p_db_block_list_node);
-            append_db_block_list_node_to_tail(&db_block_list_entry, p_db_block_list_node);
-
-            // assign new block list node for next block
-            p_db_block_list_node = Mema_Api_Alloc(MEMA_USER_FACILEDB, sizeof(DB_BLOCK_LIST_NODE_T));
-            db_block_list_node_init(p_db_block_list_node);
-            // assign local variables
-            p_db_block = &(p_db_block_list_node->db_block);
-            p_db_block_write = p_db_block->block_data;
-            p_db_block_end = p_db_block_write + FACILEDB_BLOCK_DATA_SIZE;
-        }
-
-        // copy record properties to block data.
-        memcpy(p_db_block_write, &(p_current_db_record_info->db_record_properties), db_record_properties_size);
-        p_db_block_write += db_record_properties_size;
-
-        // copy record key to block data.
-        remaining_size = p_current_db_record_info->db_record_properties.key_size;
-        while (remaining_size > 0)
-        {
-            assert(p_db_block_end >= p_db_block_write);
-
-            uint32_t remaining_block_size = (p_db_block_end - p_db_block_write);
-            uint32_t copy_size = (remaining_block_size < remaining_size) ? (remaining_block_size) : (remaining_size);
-            uint8_t *p_key = NULL;
-
-            if (copy_size == 0)
-            {
-                // Current db_block is full, append db_block_list_node into the end of the list.
-                insert_db_data_handler_assign_block_value(p_db_block, p_db_set_info, p_db_data_info->record_num, data_tag, calculated_record_crc32);
-                insert_db_data_handler_assign_prev_next_block_tag(&db_block_list_entry, p_db_block_list_node);
-                append_db_block_list_node_to_tail(&db_block_list_entry, p_db_block_list_node);
-
-                // assign new block list node for next block
-                p_db_block_list_node = Mema_Api_Alloc(MEMA_USER_FACILEDB, sizeof(DB_BLOCK_LIST_NODE_T));
-                db_block_list_node_init(p_db_block_list_node);
-                // assign local variables
-                p_db_block = &(p_db_block_list_node->db_block);
-                p_db_block_write = p_db_block->block_data;
-                p_db_block_end = p_db_block_write + FACILEDB_BLOCK_DATA_SIZE;
-
-                continue;
-            }
-
-            p_key = p_current_db_record_info->db_record.p_key + p_current_db_record_info->db_record_properties.key_size - remaining_size;
-            memcpy(p_db_block_write, p_key, copy_size);
-            p_db_block_write += copy_size;
-            remaining_size -= copy_size;
-        }
-
-        // copy record value to block data
-        remaining_size = p_current_db_record_info->db_record_properties.value_size;
-        while (remaining_size > 0)
-        {
-            assert(p_db_block_end >= p_db_block_write);
-
-            uint32_t remaining_block_size = p_db_block_end - p_db_block_write;
-            uint32_t copy_size = (remaining_block_size < remaining_size) ? (remaining_block_size) : (remaining_size);
-            uint8_t *p_value = NULL;
-
-            if (copy_size == 0)
-            {
-                // Current db_block is full, append db_block_list_node into the end of the list.
-                insert_db_data_handler_assign_block_value(p_db_block, p_db_set_info, p_db_data_info->record_num, data_tag, calculated_record_crc32);
-                insert_db_data_handler_assign_prev_next_block_tag(&db_block_list_entry, p_db_block_list_node);
-                append_db_block_list_node_to_tail(&db_block_list_entry, p_db_block_list_node);
-
-                // assign new block list node for next block
-                p_db_block_list_node = Mema_Api_Alloc(MEMA_USER_FACILEDB, sizeof(DB_BLOCK_LIST_NODE_T));
-                db_block_list_node_init(p_db_block_list_node);
-                // assign local variables
-                p_db_block = &(p_db_block_list_node->db_block);
-                p_db_block_write = p_db_block->block_data;
-                p_db_block_end = p_db_block_write + FACILEDB_BLOCK_DATA_SIZE;
-
-                continue;
-            }
-
-            p_value = p_current_db_record_info->db_record.p_value + p_current_db_record_info->db_record_properties.value_size - remaining_size;
-            memcpy(p_db_block_write, p_value, copy_size);
-            p_db_block_write += copy_size;
-            remaining_size -= copy_size;
-        }
-    }
-
-    // Append the last db_block_list_node into the end of the list.
-    insert_db_data_handler_assign_block_value(p_db_block, p_db_set_info, p_db_data_info->record_num, data_tag, calculated_record_crc32);
-    insert_db_data_handler_assign_prev_next_block_tag(&db_block_list_entry, p_db_block_list_node);
-    append_db_block_list_node_to_tail(&db_block_list_entry, p_db_block_list_node);
-
-    // update the modified time of the db_set_properties
-    p_db_set_info->db_set_properties.modified_time = db_block_list_entry.p_tail->db_block.modified_time;
-    // write the db block list into file.
-    insert_db_data_handler_write_db_block_list(p_db_set_info, &db_block_list_entry);
-    update_to_db_set_properties_region(p_db_set_info);
-
-#if ENABLE_DB_INDEX
-    // insert index if existed
-    uint64_t first_db_block_tag = db_block_list_entry.p_head->db_block.block_tag;
-    for (uint32_t i = 0; i < (p_db_data_info->record_num); i++)
-    {
-        DB_RECORD_INFO_T *p_current_db_record_info = &p_db_data_info->p_db_record_info[i];
-        char *p_index_key = set_db_index_key(p_db_set_info->p_set_name, p_db_set_info->set_name_size, p_current_db_record_info->db_record.p_key, p_current_db_record_info->db_record_properties.key_size);
-
-        // If p_key index has been created, insert new index element.
-        if (Index_Api_Index_Key_Exist(p_index_key))
-        {
-            DB_INDEX_PAYLOAD_T db_index_payload = {
-                .data_tag = data_tag,
-                .start_db_block_tag = first_db_block_tag};
-
-            insert_db_record_index(p_db_set_info, p_current_db_record_info, &db_index_payload);
-        }
-
-        Mema_Api_Free(MEMA_USER_FACILEDB, p_index_key);
-    }
-#endif
-
-    // free db block list
-    insert_db_data_handler_free_db_block_list(&db_block_list_entry);
-
-    // return the number of inserted data.
-    return 1;
-}
-
-// return value: number of written db blocks
-uint32_t insert_db_data_handler_write_db_block_list(DB_SET_INFO_T *p_db_set_info, DB_BLOCK_LIST_ENTRY_T *p_db_block_list_entry)
-{
-    DB_BLOCK_LIST_NODE_T *p_current_node = p_db_block_list_entry->p_head;
-    uint32_t block_num;
-
-    for (block_num = 0; block_num < p_db_block_list_entry->list_length; block_num++)
-    {
-        write_db_block(&(p_current_node->db_block), p_db_set_info);
-        p_current_node = p_current_node->p_next;
-    }
-
-    return block_num;
-}
-
-void insert_db_data_handler_assign_block_value(DB_BLOCK_T *p_db_block, DB_SET_INFO_T *p_info, uint32_t valid_record_num, uint64_t data_tag, uint32_t record_crc32)
-{
-    uint64_t current_time = (uint64_t)get_current_time();
-
-    p_db_block->block_tag = ++(p_info->db_set_properties.block_num);
-    p_db_block->data_tag = data_tag;
-    p_db_block->deleted = 0;
-    p_db_block->valid_record_num = valid_record_num;
-    p_db_block->created_time = current_time;
-    p_db_block->modified_time = current_time;
-
-    p_db_block->record_crc32 = record_crc32;
-}
-
-void insert_db_data_handler_assign_prev_next_block_tag(DB_BLOCK_LIST_ENTRY_T *p_entry, DB_BLOCK_LIST_NODE_T *p_node)
-{
-    // update the next block tag of the last block in the list and the prev block tag of the current block if exists.
-    if (p_entry->p_tail != NULL)
-    {
-        p_entry->p_tail->db_block.next_block_tag = p_node->db_block.block_tag;
-        p_node->db_block.prev_block_tag = p_entry->p_tail->db_block.block_tag;
-    }
-
-    p_node->db_block.next_block_tag = 0;
-}
-
-void insert_db_data_handler_free_db_block_list(DB_BLOCK_LIST_ENTRY_T *p_db_block_list_entry)
-{
-    DB_BLOCK_LIST_NODE_T *p_current_node = p_db_block_list_entry->p_head;
-    DB_BLOCK_LIST_NODE_T *p_next_node = NULL;
-
-    for (uint32_t list_length = p_db_block_list_entry->list_length; list_length > 0; list_length--)
-    {
-        p_next_node = p_current_node->p_next;
-        Mema_Api_Free(MEMA_USER_FACILEDB, p_current_node);
-        p_current_node = p_next_node;
-    }
-
-    p_db_block_list_entry->list_length = 0;
-    p_db_block_list_entry->p_head = NULL;
-    p_db_block_list_entry->p_tail = NULL;
-}
-
-// return value: DB_DATA_INFO_T array whose length is *p_result_db_data_info_num
-void search_db_data(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_target_db_record_info, FACILEDB_RECORD_VALUE_TYPE_COMPARE_RESULT_E compare_type, DB_DATA_INFO_LIST_ENTRY_T *p_result_db_data_info_list_entry)
-{
-#if ENABLE_DB_INDEX
-    // check if index existed and call search_db_data_indexed.
-    char *p_index_key = set_db_index_key(p_db_set_info->p_set_name, p_db_set_info->set_name_size, p_target_db_record_info->db_record.p_key, p_target_db_record_info->db_record_properties.key_size);
-    if (Index_Api_Index_Key_Exist(p_index_key))
-    {
-        Mema_Api_Free(MEMA_USER_FACILEDB, p_index_key);
-        return search_db_data_indexed(p_db_set_info, p_target_db_record_info, compare_type, p_result_db_data_info_list_entry);
-    }
-    else
-    {
-        Mema_Api_Free(MEMA_USER_FACILEDB, p_index_key);
-    }
-#endif
-    // General sequential search
-    return search_db_data_sequential(p_db_set_info, p_target_db_record_info, compare_type, p_result_db_data_info_list_entry);
-}
-
-// General sequential search
-void search_db_data_sequential(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_target_db_record_info, FACILEDB_RECORD_VALUE_TYPE_COMPARE_RESULT_E compare_type, DB_DATA_INFO_LIST_ENTRY_T *p_result_db_data_info_list_entry)
-{
-    uint64_t block_num = p_db_set_info->db_set_properties.block_num;
-
-    void *p_target_key = p_target_db_record_info->db_record.p_key;
-    uint32_t target_key_size = p_target_db_record_info->db_record_properties.key_size;
-    void *p_target_value = p_target_db_record_info->db_record.p_value;
-    FACILEDB_RECORD_VALUE_TYPE_E target_value_type = p_target_db_record_info->db_record_properties.record_value_type;
-
-    for (uint64_t block_tag = 1; block_tag <= block_num; block_tag++)
-    {
-        DB_DATA_INFO_LIST_NODE_T *p_db_data_info_list_node = NULL;
-        DB_BLOCK_T db_block;
-        bool record_match = false;
-
-        db_block_init(&db_block);
-
-        // read attribute only for checking delete flag and first block flag.
-        if (read_db_block_attributes(p_db_set_info, block_tag, &db_block) <= 0)
-        {
-            assert(false);
-        }
-
-        if (db_block.deleted || db_block.prev_block_tag != 0)
-        {
-            continue;
-        }
-
-        p_db_data_info_list_node = Mema_Api_Alloc(MEMA_USER_FACILEDB, sizeof(DB_DATA_INFO_LIST_NODE_T));
-        db_data_info_list_node_init(p_db_data_info_list_node);
-        // Read the whole block and next blocks if they exists. The buffers will be allocated, and the record content will be copied into the record_info
-        if (extract_db_data_info_from_db_blocks(&(p_db_data_info_list_node->db_data_info), block_tag, p_db_set_info) == false)
-        {
-            // invalid data (crc check fail / db block read fail / ...)
-            Mema_Api_Free(MEMA_USER_FACILEDB, p_db_data_info_list_node);
-            continue;
-        }
-
-        // Search if the target record matched or not.
-        for (uint32_t record_idx = 0; record_idx < p_db_data_info_list_node->db_data_info.record_num; record_idx++)
-        {
-            if (target_key_size == p_db_data_info_list_node->db_data_info.p_db_record_info[record_idx].db_record_properties.key_size &&
-                memcmp(p_db_data_info_list_node->db_data_info.p_db_record_info[record_idx].db_record.p_key, p_target_key, target_key_size) == 0 &&
-                target_value_type == p_db_data_info_list_node->db_data_info.p_db_record_info[record_idx].db_record_properties.record_value_type &&
-                // value size comparison doesn't need (?)
-                (compare_type == FACILEDB_RECORD_VALUE_TYPE_COMPARE_ALL || Faciledb_Record_Value_Type_Compare(target_value_type, p_db_data_info_list_node->db_data_info.p_db_record_info[record_idx].db_record.p_value, p_target_value) == compare_type))
-            {
-                record_match = true;
-                break;
-            }
-        }
-
-        // Copy the matched key and value to p_result_db_data_infos array.
-        if (record_match)
-        {
-            // append the node to the result list entry.
-            if (p_result_db_data_info_list_entry->list_length == 0)
-            {
-                p_db_data_info_list_node->p_prev = p_db_data_info_list_node;
-                p_db_data_info_list_node->p_next = p_db_data_info_list_node;
-
-                p_result_db_data_info_list_entry->p_head = p_db_data_info_list_node;
-                p_result_db_data_info_list_entry->p_tail = p_db_data_info_list_node;
-            }
-            else
-            {
-                p_db_data_info_list_node->p_prev = p_result_db_data_info_list_entry->p_tail;
-                p_db_data_info_list_node->p_next = p_result_db_data_info_list_entry->p_head;
-
-                p_result_db_data_info_list_entry->p_tail->p_next = p_db_data_info_list_node;
-                p_result_db_data_info_list_entry->p_head->p_prev = p_db_data_info_list_node;
-
-                p_result_db_data_info_list_entry->p_tail = p_db_data_info_list_node;
-            }
-            p_result_db_data_info_list_entry->list_length++;
-        }
-        else
-        {
-            free_db_data_info_list_node_resources(p_db_data_info_list_node);
-            Mema_Api_Free(MEMA_USER_FACILEDB, p_db_data_info_list_node);
-        }
-    }
-}
-
-void delete_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_LIST_ENTRY_T *p_db_data_info_list_entry)
-{
-    DB_BLOCK_T db_block;
-    uint64_t block_tag = 0;
-    db_block_init(&db_block);
-    DB_DATA_INFO_LIST_NODE_T *p_current_node = p_db_data_info_list_entry->p_head;
-
-    for (uint32_t i = 0; i < p_db_data_info_list_entry->list_length; i++)
-    {
-        block_tag = p_current_node->db_data_info.start_db_block_tag;
-
-        while (block_tag != 0)
-        {
-            if (read_db_block(p_db_set_info, block_tag, &db_block) <= 0)
-            {
-                assert(false);
-            }
-
-            db_block.deleted = 1;
-            write_db_block(&db_block, p_db_set_info);
-            // continue to the next block.
-            block_tag = db_block.next_block_tag;
-        }
-
-        p_current_node = p_current_node->p_next;
-    }
 }
 
 #if ENABLE_DB_INDEX
@@ -3059,7 +2203,7 @@ uint32_t make_db_record_index(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_
         db_data_info_list_entry_init(&db_data_info_list_entry);
 
         // search for all matched db_records
-        search_db_data(p_db_set_info, p_db_record_info, FACILEDB_RECORD_VALUE_TYPE_COMPARE_ALL, &db_data_info_list_entry);
+        search_db_data(p_db_set_info, p_db_record_info, DB_RECORD_VALUE_TYPE_COMPARE_ALL, &db_data_info_list_entry);
         result_data_num = db_data_info_list_entry.list_length;
 
         p_current_node = db_data_info_list_entry.p_head;
@@ -3128,118 +2272,4 @@ void insert_db_record_index(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_db
     Mema_Api_Free(MEMA_USER_FACILEDB, p_index_key);
 }
 
-void search_db_data_indexed(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_target_db_record_info, FACILEDB_RECORD_VALUE_TYPE_COMPARE_RESULT_E compare_type, DB_DATA_INFO_LIST_ENTRY_T *p_result_db_data_list_entry)
-{
-    char *p_index_key = set_db_index_key(p_db_set_info->p_set_name, p_db_set_info->set_name_size, p_target_db_record_info->db_record.p_key, p_target_db_record_info->db_record_properties.key_size);
-    void *p_record_value = p_target_db_record_info->db_record.p_value;
-    void *p_index_id = NULL;
-    HASH_VALUE_T hash_value = 0;
-    INDEX_ID_TYPE_E index_id_type = get_db_index_id_type(p_target_db_record_info->db_record_properties.record_value_type);
-    INDEX_SEARCH_RESULT_T *p_index_search_result = NULL;
-    DB_INDEX_PAYLOAD_T *p_result_index_payloads = NULL;
-
-    if (index_id_type != INDEX_ID_TYPE_INVALID)
-    {
-        // Setup p_index_id based on the index_id_type.
-        if (index_id_type == INDEX_ID_TYPE_HASH)
-        {
-            // hash the value
-            hash_value = Hash(p_record_value, p_target_db_record_info->db_record_properties.value_size);
-            p_index_id = &hash_value;
-        }
-        else
-        {
-            p_index_id = p_record_value;
-        }
-
-        // if(compare_type == FACILEDB_RECORD_VALUE_TYPE_COMPARE_ALL)
-        // {
-        //     // TODO
-        // }
-        if (compare_type == FACILEDB_RECORD_VALUE_TYPE_COMPARE_EQUAL)
-        {
-            p_index_search_result = Index_Api_Search_Equal(p_index_key, p_index_id, index_id_type);
-            p_result_index_payloads = (DB_INDEX_PAYLOAD_T *)p_index_search_result->p_result_array;
-        }
-        else
-        {
-            assert(0);
-        }
-
-        // Transfer db_index_payloads to db_data_infos
-        for (uint32_t i = 0; i < p_index_search_result->result_length; i++)
-        {
-            DB_BLOCK_T db_block;
-            DB_DATA_INFO_LIST_NODE_T *p_db_data_info_list_node = NULL;
-            bool record_match = false;
-
-            db_block_init(&db_block);
-
-            // read attribute only for checking delete flag and first block flag.
-            if (read_db_block_attributes(p_db_set_info, p_result_index_payloads[i].start_db_block_tag, &db_block) <= 0)
-            {
-                assert(false);
-            }
-
-            if (db_block.deleted || db_block.prev_block_tag != 0)
-            {
-                continue;
-            }
-
-            p_db_data_info_list_node = Mema_Api_Alloc(MEMA_USER_FACILEDB, sizeof(DB_DATA_INFO_LIST_NODE_T));
-            db_data_info_list_node_init(p_db_data_info_list_node);
-            // Read the whole block and next blocks if they exists. The buffers will be allocated, and the record content will be copied into the record_info
-            extract_db_data_info_from_db_blocks(&(p_db_data_info_list_node->db_data_info), p_result_index_payloads[i].start_db_block_tag, p_db_set_info);
-
-            // Compare again to prevent collision.
-            for (uint32_t record_idx = 0; record_idx < (p_db_data_info_list_node->db_data_info.record_num); record_idx++)
-            {
-                if (p_target_db_record_info->db_record_properties.key_size == p_db_data_info_list_node->db_data_info.p_db_record_info[record_idx].db_record_properties.key_size &&
-                    memcmp(p_db_data_info_list_node->db_data_info.p_db_record_info[record_idx].db_record.p_key, p_target_db_record_info->db_record.p_key, p_target_db_record_info->db_record_properties.key_size) == 0 &&
-                    p_target_db_record_info->db_record_properties.record_value_type == p_db_data_info_list_node->db_data_info.p_db_record_info[record_idx].db_record_properties.record_value_type &&
-                    (compare_type == FACILEDB_RECORD_VALUE_TYPE_COMPARE_ALL || Faciledb_Record_Value_Type_Compare(p_target_db_record_info->db_record_properties.record_value_type, p_db_data_info_list_node->db_data_info.p_db_record_info[record_idx].db_record.p_value, p_target_db_record_info->db_record.p_value) == compare_type))
-                {
-                    record_match = true;
-                    break;
-                }
-            }
-
-            if (record_match)
-            {
-                // insert the new node to the result list entry.
-                if (p_result_db_data_list_entry->list_length == 0)
-                {
-                    p_result_db_data_list_entry->p_head = p_db_data_info_list_node;
-                    p_result_db_data_list_entry->p_tail = p_db_data_info_list_node;
-
-                    p_db_data_info_list_node->p_prev = p_db_data_info_list_node;
-                    p_db_data_info_list_node->p_next = p_db_data_info_list_node;
-                }
-                else
-                {
-                    // append to the tail.
-                    p_db_data_info_list_node->p_prev = p_result_db_data_list_entry->p_tail;
-                    p_db_data_info_list_node->p_next = p_result_db_data_list_entry->p_head;
-
-                    p_result_db_data_list_entry->p_tail->p_next = p_db_data_info_list_node;
-                    p_result_db_data_list_entry->p_head->p_prev = p_db_data_info_list_node;
-
-                    p_result_db_data_list_entry->p_tail = p_db_data_info_list_node;
-                }
-                p_result_db_data_list_entry->list_length++;
-
-                // Because the data info resources still in-used for result, don't free data info resources here.
-            }
-            else
-            {
-                free_db_data_info_list_node_resources(p_db_data_info_list_node);
-                Mema_Api_Free(MEMA_USER_FACILEDB, p_db_data_info_list_node);
-            }
-        }
-
-        Index_Api_Free_Search_Result(p_index_search_result);
-    }
-
-    Mema_Api_Free(MEMA_USER_FACILEDB, p_index_key);
-}
 #endif // ENABLE_DB_INDEX

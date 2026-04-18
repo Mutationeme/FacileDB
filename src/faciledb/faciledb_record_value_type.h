@@ -1,0 +1,26 @@
+#ifndef __FACILEDB_RECORD_VALUE_TYPE_H__
+#define __FACILEDB_RECORD_VALUE_TYPE_H__
+
+#include <stdint.h>
+#include <stdbool.h>
+
+#include "faciledb.h"
+
+typedef enum
+{
+    DB_RECORD_VALUE_TYPE_COMPARE_RIGHT_GREATER = -1,
+    DB_RECORD_VALUE_TYPE_COMPARE_EQUAL = 0,
+    DB_RECORD_VALUE_TYPE_COMPARE_LEFT_GREATER = 1,
+    DB_RECORD_VALUE_TYPE_COMPARE_ALL,
+
+    DB_RECORD_VALUE_TYPE_COMPARE_GREATER_THAN = DB_RECORD_VALUE_TYPE_COMPARE_LEFT_GREATER,
+    DB_RECORD_VALUE_TYPE_COMPARE_SMALLER_THAN = DB_RECORD_VALUE_TYPE_COMPARE_RIGHT_GREATER,
+
+    
+} DB_RECORD_VALUE_TYPE_COMPARE_RESULT_E;
+
+DB_RECORD_VALUE_TYPE_COMPARE_RESULT_E db_record_value_type_compare(FACILEDB_RECORD_VALUE_TYPE_E record_value_type, void *value1, void *value2);
+bool db_record_value_type_check_size_valid(FACILEDB_RECORD_VALUE_TYPE_E record_value_type, uint32_t value_size);
+
+
+#endif //__FACILEDB_RECORD_VALUE_TYPE_H__

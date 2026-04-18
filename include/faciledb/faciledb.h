@@ -1,13 +1,14 @@
 #ifndef __FACILEDB_H__
 #define __FACILEDB_H__
 
+#include <stdint.h>
+#include <stdbool.h>
+#include <stdio.h>
+
 // Feature Options
 #ifndef ENABLE_DB_INDEX
 #define ENABLE_DB_INDEX (1)
 #endif // ENABLE_DB_INDEX
-
-#include <stdint.h>
-#include <stdio.h>
 
 // TODO: compile error when block size < sizeof(DB_RECORD_PROPERTIES_T)
 #ifndef FACILEDB_BLOCK_DATA_SIZE

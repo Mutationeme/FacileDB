@@ -15,6 +15,7 @@ FacileDB aims for portability and a minimal footprint, making it a good fit for 
 ## TODO
 - recovery: block
 - recovery: delete
+- recovery: index
 - Discuss: mmap
 
 

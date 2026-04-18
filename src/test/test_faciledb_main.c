@@ -14,6 +14,10 @@
 // Definition for buffer length in search operation.
 #define DB_SEARCH_DATA_INFO_BUFFER_LEN (1)
 
+#include "faciledb_api.c"
+#include "faciledb_insert.c"
+#include "faciledb_search.c"
+#include "faciledb_delete.c"
 #include "faciledb.c"
 
 char test_faciledb_directory[] = "./bin/test_db_files/";

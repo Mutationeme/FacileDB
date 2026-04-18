@@ -26,7 +26,7 @@ SRC = $(wildcard $(SRCDIR)/*.c) \
 # Object files for main target
 OBJ = $(patsubst $(SRCDIR)/%.c, $(OBJDIR)/%.o, $(SRC))
 OBJ_TEST_INDEX = $(filter-out $(OBJDIR)/index/index.o, $(OBJ))
-OBJ_TEST_FACILEDB = $(filter-out $(OBJDIR)/faciledb/faciledb.o, $(OBJ))
+OBJ_TEST_FACILEDB = $(filter-out $(OBJDIR)/faciledb/faciledb.o $(OBJDIR)/faciledb/faciledb_api.o $(OBJDIR)/faciledb/faciledb_insert.o $(OBJDIR)/faciledb/faciledb_search.o $(OBJDIR)/faciledb/faciledb_delete.o, $(OBJ))
 OBJ_TEST_HASH = $(filter-out $(OBJDIR)/util/hash.o, $(OBJ))
 OBJ_TEST_CRC = $(filter-out $(OBJDIR)/util/crc.o, $(OBJ))
 
