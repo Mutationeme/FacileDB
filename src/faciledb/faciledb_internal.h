@@ -47,7 +47,46 @@ typedef enum
     DB_SET_INFO_STATUS_READING,
 } DB_SET_INFO_STATUS_E;
 
+typedef enum
+{
+    DB_SYS_ACTION_TYPE_DELETE,
+
+    DB_SYS_ACTION_TYPE_INAVLID,
+    DB_SYS_ACTION_TYPE_NUM = DB_SYS_ACTION_TYPE_INAVLID
+} DB_SYS_ACTION_TYPE_E;
+
 // Struct definition
+typedef struct
+{
+    uint64_t data_tag; 
+    union
+    {
+        DB_SYS_ACTION_TYPE_E action;
+        uint32_t action_32;
+    };
+} DB_SYS_RECORD_T;
+
+typedef struct
+{
+    uint64_t block_tag;
+    uint64_t created_time;
+    DB_SYS_RECORD_T sys_record;
+} DB_SYS_DATA_INFO_T;
+
+typedef struct DB_SYS_DATA_INFO_LIST_NODE_T
+{
+    DB_SYS_DATA_INFO_T sys_data_info;
+    struct DB_SYS_DATA_INFO_LIST_NODE_T *p_prev;
+    struct DB_SYS_DATA_INFO_LIST_NODE_T *p_next;
+} DB_SYS_DATA_INFO_LIST_NODE_T;
+
+typedef struct DB_SYS_DATA_INFO_LIST_ENTRY_T
+{
+    uint32_t list_length;
+    DB_SYS_DATA_INFO_LIST_NODE_T *p_head;
+    DB_SYS_DATA_INFO_LIST_NODE_T *p_tail;
+} DB_SYS_DATA_INFO_LIST_ENTRY_T;
+
 typedef struct
 {
 #if IS_POSIX_API_SUPPORT
@@ -68,6 +107,7 @@ typedef struct
     uint64_t created_time;
     uint64_t modified_time;
     uint64_t data_num;
+    uint64_t latest_sys_block_tag; // sys block list is a singly linked list start from latest_sys_block_tag 
     uint32_t crc32; // crc32 of the above values (doesn't include crc32 itself)
 } DB_SET_PROPERTIES_T;
 
@@ -81,6 +121,8 @@ typedef struct
     DB_SET_PROPERTIES_T db_set_properties;
     uint32_t set_name_size;
     void *p_set_name;
+
+    DB_SYS_DATA_INFO_LIST_ENTRY_T sys_data_list_entry;
 } DB_SET_INFO_T;
 
 typedef struct
@@ -143,8 +185,8 @@ typedef struct
     uint64_t created_time;
     uint64_t modified_time;
     uint32_t deleted;
-    uint32_t valid_record_num;   // data based
-    uint32_t record_crc32;       // foreach (RECORD_PROPERTIES_T + RECORD_T) whose delete flag is not 0.
+    uint32_t valid_record_num;   // The number of record in the data in the data, and numbers of sys records in the current block.
+    uint32_t record_crc32;       // foreach(record in data): db_record_properties + p_key + p_value || foreach(sys_record in block): data_tag + action
     uint32_t block_header_crc32; // crc32 of the above values (doesn't include block_crc32 itself)
 
     uint8_t block_data[FACILEDB_BLOCK_DATA_SIZE]; // store db_records.
@@ -195,6 +237,9 @@ void db_set_info_file_unlock_read(DB_SET_INFO_T *p_db_set_info);
 size_t get_db_record_properties_size();
 void update_to_db_set_properties_region(DB_SET_INFO_T *p_db_set_info);
 
+void db_sys_record_init(DB_SYS_RECORD_T *p_sys_record);
+size_t get_db_sys_record_size();
+
 void db_data_info_init(DB_DATA_INFO_T *p_db_data_info);
 void db_data_info_list_entry_init(DB_DATA_INFO_LIST_ENTRY_T *p_entry);
 void db_data_info_list_node_init(DB_DATA_INFO_LIST_NODE_T *p_node);
@@ -206,6 +251,11 @@ bool shallow_assign_db_data_info_to_failedb_data(FACILEDB_DATA_T *p_faciledb_dat
 uint32_t insert_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_T *p_db_data_info, uint64_t data_tag);
 void search_db_data(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_target_db_record_info, DB_RECORD_VALUE_TYPE_COMPARE_RESULT_E compare_type, DB_DATA_INFO_LIST_ENTRY_T *p_result_db_data_info_list_entry);
 void delete_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_LIST_ENTRY_T *p_db_data_info_list_entry);
+
+void db_sys_data_info_init(DB_SYS_DATA_INFO_T *p_db_sys_data_info);
+void db_sys_data_info_list_entry_init(DB_SYS_DATA_INFO_LIST_ENTRY_T *p_entry);
+void db_sys_data_info_list_node_init(DB_SYS_DATA_INFO_LIST_NODE_T *p_node);
+void free_db_sys_data_info_list(DB_SYS_DATA_INFO_LIST_ENTRY_T *p_entry);
 
 void db_record_info_init(DB_RECORD_INFO_T *p_db_record_info);
 void shallow_assign_faciledb_record_to_db_record_info(DB_RECORD_INFO_T *p_db_record_info, FACILEDB_RECORD_T *p_faciledb_record);

@@ -1637,7 +1637,7 @@ void test_faciledb_delete_case0()
             }
         }
     };
-    FACILEDB_RECORD_T delete_record[1] = {
+    FACILEDB_RECORD_T delete_record[] = {
         // match: 0
         {
             .key_size = 2,
@@ -1745,7 +1745,7 @@ void test_faciledb_delete_case2()
 
     char db_set_name[] = "test_db_delete_case2";
     // clang-format off
-    FACILEDB_DATA_T data[4] = 
+    FACILEDB_DATA_T data[] = 
     {
         {
             .record_num = 1,
@@ -1921,6 +1921,395 @@ void test_faciledb_delete_case2()
         };
         // clang-format on
 
+        for (uint32_t i = 0; i < 1; i++)
+        {
+            check_faciledb_search_result(p_faciledb_search_result[i], &(expected_search_result[i]));
+        }
+    }
+
+    for (uint32_t j = 0; j < 1; j++)
+    {
+        FacileDB_Api_Free_Search_Result(p_faciledb_search_result[j]);
+    }
+
+    {
+        // check
+        assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_FACILEDB) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_FACILEDB) == 0);
+#if ENABLE_DB_INDEX
+        assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_INDEX) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_INDEX) == 0);
+#endif
+    }
+
+    test_end(case_name);
+}
+
+void test_faciledb_delete_case3()
+{
+    char case_name[] = "test_faciledb_delete_case3";
+    test_start(case_name);
+
+    char db_set_name[] = "test_db_delete_case3";
+    // clang-format off
+    FACILEDB_DATA_T data[] = 
+    {
+        {
+            .record_num = 1,
+            .p_data_records = (FACILEDB_RECORD_T[]){
+                {
+                    .key_size = 2, // 'a' and '\0'
+                    .p_key = (void *)"a",
+                    .value_size = sizeof(uint32_t),
+                    .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                    .p_value = (void *)&(uint32_t){1}
+                }
+            }
+        },
+        {
+            .record_num = 2,
+            .p_data_records = (FACILEDB_RECORD_T[]){
+                {
+                    // [0]
+                    .key_size = 2,
+                    .p_key = (void *)"a",
+                    .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                    .value_size = sizeof(uint32_t),
+                    .p_value = (void *)&(uint32_t){2}
+                },
+                {
+                    // [1]
+                    .key_size = 2,
+                    .p_key = (void *)"b",
+                    .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                    .value_size = sizeof(uint32_t),
+                    .p_value = (void *)&(uint32_t){3}
+                }
+            }  
+        },
+        {
+            .record_num = 3,
+            .p_data_records = (FACILEDB_RECORD_T[]){
+                {
+                    // [0]
+                    .key_size = 2,
+                    .p_key = (void *)"a",
+                    .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                    .value_size = sizeof(uint32_t),
+                    .p_value = (void *)&(uint32_t){1}
+                },
+                {
+                    // [1]
+                    .key_size = 2,
+                    .p_key = (void *)"b",
+                    .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                    .value_size = sizeof(uint32_t),
+                    .p_value = (void *)&(uint32_t){2}
+                },
+                {
+                    // [2]
+                    .key_size = 2,
+                    .p_key = (void *)"c",
+                    .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                    .value_size = sizeof(uint32_t),
+                    .p_value = (void *)&(uint32_t){3}
+                }
+            }
+        },
+        {
+            .record_num = 2,
+            .p_data_records = (FACILEDB_RECORD_T[]){
+                {
+                    .key_size = 2, // 'a' and '\0'
+                    .p_key = (void *)"a",
+                    .value_size = sizeof(uint32_t),
+                    .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                    .p_value = (void *)&(uint32_t){1}
+                },
+                {
+                    .key_size = 2,
+                    .p_key = (void *)"b",
+                    .value_size = sizeof(uint32_t),
+                    .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                    .p_value = (void *)&(uint32_t){3}
+                }
+            }
+        }
+    };
+    FACILEDB_RECORD_T search_record[1] = {
+        // before: 3
+        // after: 2
+        {
+            .key_size = 2,
+            .p_key = (void *)"a",
+            .value_size = sizeof(uint32_t),
+            .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+            .p_value = (void *)&(uint32_t){1}
+        }
+    };
+    FACILEDB_RECORD_T delete_record[1] = {
+        // match: 2
+        {
+            .key_size = 2,
+            .p_key = (void *)"b",
+            .value_size = sizeof(uint32_t),
+            .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+            .p_value = (void *)&(uint32_t){3}
+        }
+    };
+    // clang-format on
+    uint32_t delete_num[1] = {0};
+    FACILEDB_DATA_SEARCH_RESULT_T *p_faciledb_search_result[1];
+
+    FacileDB_Api_Init(test_faciledb_directory);
+    // insert 4 data
+    for (uint32_t i = 0; i < 4; i++)
+    {
+        FacileDB_Api_Insert_Data(db_set_name, &(data[i]));
+    }
+    // delete
+    delete_num[0] = FacileDB_Api_Delete_Equal(db_set_name, &(delete_record[0]));
+    FacileDB_Api_Close();
+
+    FacileDB_Api_Init(test_faciledb_directory);
+    // search
+    p_faciledb_search_result[0] = FacileDB_Api_Search_Equal(db_set_name, &(search_record[0]));
+    FacileDB_Api_Close();
+
+    // Check
+    {
+        assert(delete_num[0] == 2);
+
+        // clang-format off
+        FACILEDB_DATA_SEARCH_RESULT_T expected_search_result[1] = {
+            {
+                .data_num = 2,
+                .p_data_array = (FACILEDB_DATA_T[]){
+                    {
+                        .record_num = 1,
+                        .p_data_records = (FACILEDB_RECORD_T[]){
+                            {
+                                .key_size = 2, // 'a' and '\0'
+                                .p_key = (void *)"a",
+                                .value_size = sizeof(uint32_t),
+                                .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                                .p_value = (void *)&(uint32_t){1}
+                            }
+                        }
+                    },
+                    {
+                        .record_num = 3,
+                        .p_data_records = (FACILEDB_RECORD_T[]){
+                            {
+                                // [0]
+                                .key_size = 2,
+                                .p_key = (void *)"a",
+                                .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                                .value_size = sizeof(uint32_t),
+                                .p_value = (void *)&(uint32_t){1}
+                            },
+                            {
+                                // [1]
+                                .key_size = 2,
+                                .p_key = (void *)"b",
+                                .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                                .value_size = sizeof(uint32_t),
+                                .p_value = (void *)&(uint32_t){2}
+                            },
+                            {
+                                // [2]
+                                .key_size = 2,
+                                .p_key = (void *)"c",
+                                .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                                .value_size = sizeof(uint32_t),
+                                .p_value = (void *)&(uint32_t){3}
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        // clang-format on
+
+        for (uint32_t i = 0; i < 1; i++)
+        {
+            check_faciledb_search_result(p_faciledb_search_result[i], &(expected_search_result[i]));
+        }
+    }
+
+    for (uint32_t j = 0; j < 1; j++)
+    {
+        FacileDB_Api_Free_Search_Result(p_faciledb_search_result[j]);
+    }
+
+    {
+        // check
+        assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_FACILEDB) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_FACILEDB) == 0);
+#if ENABLE_DB_INDEX
+        assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_INDEX) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_INDEX) == 0);
+#endif
+    }
+
+    test_end(case_name);
+}
+
+void test_faciledb_delete_case4()
+{
+    char case_name[] = "test_faciledb_delete_case4";
+    test_start(case_name);
+
+    char db_set_name[] = "test_db_delete_case4";
+    // clang-format off
+    FACILEDB_DATA_T data[] = 
+    {
+        // [0]
+        {
+            .record_num = 1,
+            .p_data_records = (FACILEDB_RECORD_T[]){
+                {
+                    .key_size = 2, // 'a' and '\0'
+                    .p_key = (void *)"a",
+                    .value_size = sizeof(uint32_t),
+                    .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                    .p_value = (void *)&(uint32_t){1}
+                }
+            }
+        },
+        // [1]
+        {
+            .record_num = 2,
+            .p_data_records = (FACILEDB_RECORD_T[]){
+                {
+                    // [0]
+                    .key_size = 2,
+                    .p_key = (void *)"a",
+                    .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                    .value_size = sizeof(uint32_t),
+                    .p_value = (void *)&(uint32_t){2}
+                },
+                {
+                    // [1]
+                    .key_size = 2,
+                    .p_key = (void *)"b",
+                    .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                    .value_size = sizeof(uint32_t),
+                    .p_value = (void *)&(uint32_t){3}
+                }
+            }  
+        },
+        // [2]
+        {
+            .record_num = 3,
+            .p_data_records = (FACILEDB_RECORD_T[]){
+                {
+                    // [0]
+                    .key_size = 2,
+                    .p_key = (void *)"a",
+                    .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                    .value_size = sizeof(uint32_t),
+                    .p_value = (void *)&(uint32_t){1}
+                },
+                {
+                    // [1]
+                    .key_size = 2,
+                    .p_key = (void *)"b",
+                    .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                    .value_size = sizeof(uint32_t),
+                    .p_value = (void *)&(uint32_t){2}
+                },
+                {
+                    // [2]
+                    .key_size = 2,
+                    .p_key = (void *)"c",
+                    .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                    .value_size = sizeof(uint32_t),
+                    .p_value = (void *)&(uint32_t){3}
+                }
+            }
+        },
+        // [3]
+        {
+            .record_num = 2,
+            .p_data_records = (FACILEDB_RECORD_T[]){
+                {
+                    .key_size = 2, // 'a' and '\0'
+                    .p_key = (void *)"a",
+                    .value_size = sizeof(uint32_t),
+                    .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                    .p_value = (void *)&(uint32_t){1}
+                },
+                {
+                    .key_size = 2,
+                    .p_key = (void *)"b",
+                    .value_size = sizeof(uint32_t),
+                    .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                    .p_value = (void *)&(uint32_t){3}
+                }
+            }
+        }
+    };
+    FACILEDB_RECORD_T delete_record[] = {
+        // match: 2
+        {
+            .key_size = 2,
+            .p_key = (void *)"b",
+            .value_size = sizeof(uint32_t),
+            .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+            .p_value = (void *)&(uint32_t){3}
+        }
+    };
+    // clang-format on
+    uint32_t delete_num[1] = {0};
+    FACILEDB_DATA_SEARCH_RESULT_T *p_faciledb_search_result[1];
+
+    FacileDB_Api_Init(test_faciledb_directory);
+    // insert 3 data
+    for (uint32_t i = 0; i < 3; i++)
+    {
+        FacileDB_Api_Insert_Data(db_set_name, &(data[i]));
+    }
+    // delete 1 data
+    delete_num[0] = FacileDB_Api_Delete_Equal(db_set_name, &(delete_record[0]));
+    FacileDB_Api_Close();
+
+    FacileDB_Api_Init(test_faciledb_directory);
+    FacileDB_Api_Insert_Data(db_set_name, &(data[3]));
+    // search 1 data
+    p_faciledb_search_result[0] = FacileDB_Api_Search_Equal(db_set_name, &(delete_record[0]));
+    FacileDB_Api_Close();
+
+    // Check
+    {
+        assert(delete_num[0] == 1);
+
+        // clang-format off
+        FACILEDB_DATA_SEARCH_RESULT_T expected_search_result[] = {
+            {
+                .data_num = 1,
+                .p_data_array = (FACILEDB_DATA_T[]){
+                    {
+                        .record_num = 2,
+                        .p_data_records = (FACILEDB_RECORD_T[]){
+                            {
+                                .key_size = 2, // 'a' and '\0'
+                                .p_key = (void *)"a",
+                                .value_size = sizeof(uint32_t),
+                                .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                                .p_value = (void *)&(uint32_t){1}
+                            },
+                            {
+                                .key_size = 2,
+                                .p_key = (void *)"b",
+                                .value_size = sizeof(uint32_t),
+                                .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                                .p_value = (void *)&(uint32_t){3}
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        // clang-format on
+
+        assert(p_faciledb_search_result[0]->data_num == expected_search_result[0].data_num);
         for (uint32_t i = 0; i < 1; i++)
         {
             check_faciledb_search_result(p_faciledb_search_result[i], &(expected_search_result[i]));
@@ -2450,6 +2839,8 @@ int main()
     test_faciledb_delete_case0();
     test_faciledb_delete_case1();
     test_faciledb_delete_case2();
+    test_faciledb_delete_case3();
+    test_faciledb_delete_case4();
 
 #if ENABLE_DB_INDEX
     test_faciledb_make_index_and_search_case1();

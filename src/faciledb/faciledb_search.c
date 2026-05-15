@@ -9,6 +9,7 @@
 #include "hash.h"
 
 static void search_db_data_sequential(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_target_db_record_info, DB_RECORD_VALUE_TYPE_COMPARE_RESULT_E compare_type, DB_DATA_INFO_LIST_ENTRY_T *p_result_db_data_info_list_entry);
+static void search_db_data_handler_remove_delete_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_LIST_ENTRY_T *p_data_info_list_entry);
 #if ENABLE_DB_INDEX
 static void search_db_data_indexed(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_target_db_record_info, DB_RECORD_VALUE_TYPE_COMPARE_RESULT_E compare_type, DB_DATA_INFO_LIST_ENTRY_T *p_result_db_data_list_entry);
 #endif
@@ -27,10 +28,15 @@ void search_db_data(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_target_db_
     else
     {
         Mema_Api_Free(MEMA_USER_FACILEDB, p_index_key);
+        search_db_data_sequential(p_db_set_info, p_target_db_record_info, compare_type, p_result_db_data_info_list_entry);
     }
+#else
+    search_db_data_sequential(p_db_set_info, p_target_db_record_info, compare_type, p_result_db_data_info_list_entry);
 #endif
-    // General sequential search
-    return search_db_data_sequential(p_db_set_info, p_target_db_record_info, compare_type, p_result_db_data_info_list_entry);
+
+    // The p_result_db_data_info_list_entry is a circular doubly linked-list.
+    // Check sys data info and remove deleted data
+    search_db_data_handler_remove_delete_data(p_db_set_info, p_result_db_data_info_list_entry);
 }
 
 // General sequential search
@@ -57,7 +63,7 @@ static void search_db_data_sequential(DB_SET_INFO_T *p_db_set_info, DB_RECORD_IN
             assert(false);
         }
 
-        if (db_block.deleted || db_block.prev_block_tag != 0)
+        if (db_block.data_tag == 0 || db_block.deleted || db_block.prev_block_tag != 0)
         {
             continue;
         }
@@ -114,6 +120,64 @@ static void search_db_data_sequential(DB_SET_INFO_T *p_db_set_info, DB_RECORD_IN
         {
             free_db_data_info_list_node_resources(p_db_data_info_list_node);
             Mema_Api_Free(MEMA_USER_FACILEDB, p_db_data_info_list_node);
+        }
+    }
+}
+
+// Assume data_info_list and sys_data_info_list are sorted in a ascending way.
+static void search_db_data_handler_remove_delete_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_LIST_ENTRY_T *p_data_info_list_entry)
+{
+    DB_SYS_DATA_INFO_LIST_NODE_T *p_sys_data_list_node = p_db_set_info->sys_data_list_entry.p_head;
+    DB_DATA_INFO_LIST_NODE_T *p_data_list_node = p_data_info_list_entry->p_head;
+    uint32_t sys_data_num = p_db_set_info->sys_data_list_entry.list_length;
+    uint32_t data_num = p_data_info_list_entry->list_length;
+
+    while(sys_data_num > 0 && data_num > 0)
+    {
+        assert(p_sys_data_list_node && p_data_list_node);
+
+        if(p_data_list_node->db_data_info.data_tag > p_sys_data_list_node->sys_data_info.sys_record.data_tag)
+        {
+            p_sys_data_list_node = p_sys_data_list_node->p_next;
+            sys_data_num--;
+        }
+        else if(p_data_list_node->db_data_info.data_tag < p_sys_data_list_node->sys_data_info.sys_record.data_tag)
+        {
+            p_data_list_node = p_data_list_node->p_next;
+            data_num--;
+        }
+        else
+        {
+            DB_DATA_INFO_LIST_NODE_T *p_temp_next = p_data_list_node->p_next;
+
+            // equal, remove the data_list_node
+            p_data_list_node->p_next->p_prev = p_data_list_node->p_prev;
+            p_data_list_node->p_prev->p_next = p_data_list_node->p_next;
+
+            if(p_data_info_list_entry->p_head == p_data_list_node && p_data_info_list_entry->p_head == p_data_info_list_entry->p_tail)
+            {
+                p_data_info_list_entry->p_head = NULL;
+                p_data_info_list_entry->p_tail = NULL;
+            }
+            else 
+            {
+                if(p_data_info_list_entry->p_head == p_data_list_node)
+                {
+                    p_data_info_list_entry->p_head = p_data_list_node->p_next;
+                }
+
+                if(p_data_info_list_entry->p_tail == p_data_list_node)
+                {
+                    p_data_info_list_entry->p_tail = p_data_list_node->p_prev;
+                }
+            }
+
+            free_db_data_info_list_node_resources(p_data_list_node);
+            Mema_Api_Free(MEMA_USER_FACILEDB, p_data_list_node);
+
+            p_data_info_list_entry->list_length--;
+            data_num--;
+            p_data_list_node = p_temp_next;
         }
     }
 }

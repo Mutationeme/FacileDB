@@ -104,7 +104,7 @@ bool read_and_check_db_set_file_format(DB_SET_INFO_T *p_db_set_info);
 void db_set_info_init(DB_SET_INFO_T *p_db_set_info);
 void allocate_db_set_info_resources(DB_SET_INFO_T *p_db_set_info);
 void free_db_set_info_resources(DB_SET_INFO_T *p_db_set_info);
-void close_db_set_info(DB_SET_INFO_T *p_db_set_info);
+// void close_db_set_info(DB_SET_INFO_T *p_db_set_info);
 void db_set_info_sync_init(DB_SET_INFO_SYNC_T *p_db_set_info_sync);
 static inline void db_set_info_sync_close_wait(DB_SET_INFO_T *p_db_set_info);
 static inline bool check_db_set_info_status(DB_SET_INFO_T *p_db_set_info, DB_SET_INFO_STATUS_E target_status);
@@ -124,6 +124,10 @@ bool check_db_set_name(DB_SET_INFO_T *p_db_set_info);
 
 off_t get_db_block_offset(DB_SET_INFO_T *p_db_set_info, uint64_t block_tag);
 size_t get_db_block_size();
+
+void db_sys_record_init(DB_SYS_RECORD_T *p_sys_record);
+uint32_t load_db_sys_data_info_list(DB_SET_INFO_T *p_db_set_info);
+uint32_t extract_db_sys_data_info_list_from_db_blocks(DB_SYS_DATA_INFO_LIST_ENTRY_T *p_entry, uint64_t start_block_tag, DB_SET_INFO_T *p_db_set_info);
 
 bool allocate_db_record_info_resources(DB_RECORD_INFO_T *p_db_record_info);
 void free_db_record_info_resources(DB_RECORD_INFO_T *p_db_record_info);
@@ -310,7 +314,8 @@ DB_SET_INFO_T *request_and_lock_released_db_set_info_instance()
         // not released, close it first.
         db_set_info_sync_close_wait(p_db_set_info);
         update_db_set_info_status(p_db_set_info, DB_SET_INFO_STATUS_CLOSING);
-        close_db_set_info(p_db_set_info);
+        // close_db_set_info(p_db_set_info);
+        free_db_set_info_resources(p_db_set_info);
         update_db_set_info_status(p_db_set_info, DB_SET_INFO_STATUS_RELEASED);
     }
 #else  // DB_SET_INFO_INSTANCE_NUM == 1
@@ -359,6 +364,7 @@ void create_new_db_set_file_format(DB_SET_INFO_T *p_db_set_info, uint8_t *p_db_s
     p_db_set_info->db_set_properties.created_time = current_time;
     p_db_set_info->db_set_properties.modified_time = current_time;
     p_db_set_info->db_set_properties.seq_num = 1; // set first db_set_properties.seq_num as 1
+    p_db_set_info->db_set_properties.latest_sys_block_tag = 0;
 
     // assign value to db_set_properties_region
     db_set_properties_region_init(&new_region);
@@ -495,7 +501,8 @@ DB_SET_INFO_T *load_and_lock_db_set_info(char *p_db_set_name)
         {
             // db_set_name format error
             // TODO: need review the following error handling flow.
-            close_db_set_info(p_db_set_info);
+            // close_db_set_info(p_db_set_info);
+            free_db_set_info_resources(p_db_set_info);
             unlock_db_set_info_sync(p_db_set_info);
             return NULL;
         }
@@ -507,6 +514,7 @@ DB_SET_INFO_T *load_and_lock_db_set_info(char *p_db_set_name)
 
             db_set_info_file_lock_read(p_db_set_info);
             check_result = read_and_check_db_set_file_format(p_db_set_info);
+            load_db_sys_data_info_list(p_db_set_info);
             db_set_info_file_unlock_read(p_db_set_info);
 
             if (check_result == true)
@@ -523,7 +531,8 @@ DB_SET_INFO_T *load_and_lock_db_set_info(char *p_db_set_name)
         if (timeout)
         {
             // TODO: need review the following error operations
-            close_db_set_info(p_db_set_info);
+            // close_db_set_info(p_db_set_info);
+            free_db_set_info_resources(p_db_set_info);
             unlock_db_set_info_sync(p_db_set_info);
             return NULL;
         }
@@ -571,7 +580,8 @@ void close_db_set_info_instances()
         db_set_info_sync_close_wait(p_db_set_info);
         update_db_set_info_status(p_db_set_info, DB_SET_INFO_STATUS_CLOSING);
 
-        close_db_set_info(p_db_set_info);
+        // close_db_set_info(p_db_set_info);
+        free_db_set_info_resources(p_db_set_info);
 
         update_db_set_info_status(p_db_set_info, DB_SET_INFO_STATUS_RELEASED);
         unlock_db_set_info_sync(p_db_set_info);
@@ -583,6 +593,7 @@ void db_set_info_init(DB_SET_INFO_T *p_db_set_info)
     p_db_set_info->file = NULL;
     p_db_set_info->set_name_size = 0;
     p_db_set_info->p_set_name = NULL;
+    db_sys_data_info_list_entry_init(&(p_db_set_info->sys_data_list_entry));
     db_set_properties_init(&(p_db_set_info->db_set_properties));
     db_set_info_sync_init(&(p_db_set_info->db_set_info_sync));
 }
@@ -639,23 +650,26 @@ void free_db_set_info_resources(DB_SET_INFO_T *p_db_set_info)
         p_db_set_info->set_name_size = 0;
     }
 
-    // if (p_db_set_info->file != NULL)
-    // {
-    //     fclose(p_db_set_info->file);
-    //     p_db_set_info->file = NULL;
-    // }
+    free_db_sys_data_info_list(&(p_db_set_info->sys_data_list_entry));
+
+    if (p_db_set_info->file != NULL)
+    {
+        fclose(p_db_set_info->file);
+        p_db_set_info->file = NULL;
+    }
 }
 
-void close_db_set_info(DB_SET_INFO_T *p_db_set_info)
-{
-    // Free dynamic buffers
-    free_db_set_info_resources(p_db_set_info);
-    fclose(p_db_set_info->file);
-    p_db_set_info->file = NULL;
+// void close_db_set_info(DB_SET_INFO_T *p_db_set_info)
+// {
+//     // Free dynamic buffers
+//     free_db_set_info_resources(p_db_set_info);
+//     free_db_sys_data_info_list(&(p_db_set_info->sys_data_list_entry));
+//     fclose(p_db_set_info->file);
+//     p_db_set_info->file = NULL;
 
-    // Reset db_set_info variables except db_set_info_status.
-    // db_set_info_init(p_db_set_info);
-}
+//     // Reset db_set_info variables except db_set_info_status.
+//     // db_set_info_init(p_db_set_info);
+// }
 
 // This funtion doesn't change the status to RELEASED.
 void db_set_info_sync_init(DB_SET_INFO_SYNC_T *p_db_set_info_sync)
@@ -668,9 +682,17 @@ void db_set_info_sync_init(DB_SET_INFO_SYNC_T *p_db_set_info_sync)
 
 void sync_latest_db_set_info(DB_SET_INFO_T *p_db_set_info)
 {
+    uint64_t seq_num_before = p_db_set_info->db_set_properties.seq_num;
     if (p_db_set_info->file)
     {
         get_latest_db_set_properties(p_db_set_info, &(p_db_set_info->db_set_properties));
+    }
+
+    // reload sys_data_list_entry from db file.
+    if (p_db_set_info->db_set_properties.seq_num != seq_num_before)
+    {
+        free_db_sys_data_info_list(&(p_db_set_info->sys_data_list_entry));
+        load_db_sys_data_info_list(p_db_set_info);
     }
 }
 
@@ -993,6 +1015,7 @@ void db_set_properties_init(DB_SET_PROPERTIES_T *p_db_set_properties)
     p_db_set_properties->created_time = 0;
     p_db_set_properties->modified_time = 0;
     p_db_set_properties->data_num = 0;
+    p_db_set_properties->latest_sys_block_tag = 0;
     p_db_set_properties->crc32 = Crc32_Api_Init();
 }
 
@@ -1012,7 +1035,7 @@ static inline size_t get_db_set_properties_size()
     DB_SET_PROPERTIES_T temp;
 
     // static variable
-    return (sizeof(temp.seq_num) + sizeof(temp.block_num) + sizeof(temp.created_time) + sizeof(temp.modified_time) + sizeof(temp.data_num) + sizeof(temp.crc32));
+    return (sizeof(temp.seq_num) + sizeof(temp.block_num) + sizeof(temp.created_time) + sizeof(temp.modified_time) + sizeof(temp.data_num) + sizeof(temp.latest_sys_block_tag) + sizeof(temp.crc32));
 }
 
 static inline size_t get_db_set_properties_region_size(DB_SET_INFO_T *p_db_set_info)
@@ -1051,6 +1074,8 @@ void write_db_set_properties(DB_SET_INFO_T *p_db_set_info, DB_SET_PROPERTIES_T *
     offset += sizeof(p_db_set_properties->modified_time);
     pwrite(fd, &(p_db_set_properties->data_num), sizeof(p_db_set_properties->data_num), offset);
     offset += sizeof(p_db_set_properties->data_num);
+    pwrite(fd, &(p_db_set_properties->latest_sys_block_tag), sizeof(p_db_set_properties->latest_sys_block_tag), offset);
+    offset += sizeof(p_db_set_properties->latest_sys_block_tag);
     pwrite(fd, &(p_db_set_properties->crc32), sizeof(p_db_set_properties->crc32), offset);
     offset += sizeof(p_db_set_properties->crc32);
 
@@ -1084,6 +1109,8 @@ void write_raw_db_set_properties(DB_SET_INFO_T *p_db_set_info, DB_SET_PROPERTIES
     offset += sizeof(p_db_set_properties->modified_time);
     pwrite(fd, &(p_db_set_properties->data_num), sizeof(p_db_set_properties->data_num), offset);
     offset += sizeof(p_db_set_properties->data_num);
+    pwrite(fd, &(p_db_set_properties->latest_sys_block_tag), sizeof(p_db_set_properties->latest_sys_block_tag), offset);
+    offset += sizeof(p_db_set_properties->latest_sys_block_tag);
     pwrite(fd, &(p_db_set_properties->crc32), sizeof(p_db_set_properties->crc32), offset);
     offset += sizeof(p_db_set_properties->crc32);
 
@@ -1145,6 +1172,8 @@ uint32_t read_db_set_properties(DB_SET_INFO_T *p_db_set_info, DB_SET_PROPERTIES_
     offset += sizeof(temp.modified_time);
     pread(fd, &(temp.data_num), sizeof(temp.data_num), offset);
     offset += sizeof(temp.data_num);
+    pread(fd, &(temp.latest_sys_block_tag), sizeof(temp.latest_sys_block_tag), offset);
+    offset += sizeof(temp.latest_sys_block_tag);
     pread(fd, &(temp.crc32), sizeof(temp.crc32), offset);
 #endif // IS_POSIX_API_SUPPORT
 
@@ -1839,6 +1868,13 @@ size_t get_db_record_properties_size()
     return sizeof(DB_RECORD_PROPERTIES_T);
 }
 
+size_t get_db_sys_record_size()
+{
+    DB_SYS_RECORD_T temp;
+
+    return sizeof(temp.action) + sizeof(temp.data_tag);
+}
+
 void db_data_info_init(DB_DATA_INFO_T *p_db_data_info)
 {
     p_db_data_info->data_tag = 0;
@@ -1989,6 +2025,40 @@ void free_db_data_info_list_node_resources(DB_DATA_INFO_LIST_NODE_T *p_node)
     free_db_data_info_resources(&(p_node->db_data_info));
 }
 
+void db_sys_data_info_init(DB_SYS_DATA_INFO_T *p_db_sys_data_info)
+{
+    p_db_sys_data_info->block_tag = 0;
+    p_db_sys_data_info->created_time = 0;
+    db_sys_record_init(&(p_db_sys_data_info->sys_record));
+}
+
+void db_sys_data_info_list_entry_init(DB_SYS_DATA_INFO_LIST_ENTRY_T *p_entry)
+{
+    p_entry->p_head = NULL;
+    p_entry->p_tail = NULL;
+    p_entry->list_length = 0;
+}
+
+void db_sys_data_info_list_node_init(DB_SYS_DATA_INFO_LIST_NODE_T *p_node)
+{
+    db_sys_data_info_init(&(p_node->sys_data_info));
+    p_node->p_prev = NULL;
+    p_node->p_next = NULL;
+}
+
+void free_db_sys_data_info_list(DB_SYS_DATA_INFO_LIST_ENTRY_T *p_entry)
+{
+    for (DB_SYS_DATA_INFO_LIST_NODE_T *p_current_node = p_entry->p_head; p_entry->list_length > 0; p_entry->list_length--)
+    {
+        DB_SYS_DATA_INFO_LIST_NODE_T *p_next_node = p_current_node->p_next;
+        Mema_Api_Free(MEMA_USER_FACILEDB, p_current_node);
+        p_current_node = p_next_node;
+    }
+
+    p_entry->p_head = NULL;
+    p_entry->p_tail = NULL;
+}
+
 void db_record_info_init(DB_RECORD_INFO_T *p_db_record_info)
 {
     db_record_properties_init(&(p_db_record_info->db_record_properties));
@@ -2007,13 +2077,13 @@ bool allocate_db_record_info_resources(DB_RECORD_INFO_T *p_db_record_info)
     uint32_t value_size = p_db_record_info->db_record_properties.value_size;
 
     p_db_record_info->db_record.p_key = Mema_Api_Alloc(MEMA_USER_FACILEDB, key_size);
-    if(p_db_record_info->db_record.p_key == NULL)
+    if (p_db_record_info->db_record.p_key == NULL)
     {
         return false;
     }
 
     p_db_record_info->db_record.p_value = Mema_Api_Alloc(MEMA_USER_FACILEDB, value_size);
-    if(p_db_record_info->db_record.p_value == NULL)
+    if (p_db_record_info->db_record.p_value == NULL)
     {
         Mema_Api_Free(MEMA_USER_FACILEDB, p_db_record_info->db_record.p_key);
         return false;
@@ -2082,6 +2152,171 @@ void shallow_assign_db_record_info_to_faciledb_record(FACILEDB_RECORD_T *p_facil
     p_faciledb_record->p_value = p_db_record_info->db_record.p_value;
 }
 
+void db_sys_record_init(DB_SYS_RECORD_T *p_sys_record)
+{
+    p_sys_record->action = DB_SYS_ACTION_TYPE_INAVLID;
+    p_sys_record->data_tag = 0;
+}
+
+// return value: the list length
+uint32_t load_db_sys_data_info_list(DB_SET_INFO_T *p_db_set_info)
+{
+    DB_SYS_DATA_INFO_LIST_ENTRY_T *p_entry = &(p_db_set_info->sys_data_list_entry);
+    uint64_t sys_block_tag = p_db_set_info->db_set_properties.latest_sys_block_tag;
+
+    db_sys_data_info_list_entry_init(p_entry);
+    extract_db_sys_data_info_list_from_db_blocks(p_entry, sys_block_tag, p_db_set_info);
+
+    return p_entry->list_length;
+}
+
+uint32_t extract_db_sys_data_info_list_from_db_blocks(DB_SYS_DATA_INFO_LIST_ENTRY_T *p_entry, uint64_t start_block_tag, DB_SET_INFO_T *p_db_set_info)
+{
+    uint64_t block_tag = start_block_tag;
+    uint32_t sys_data_num = 0;
+
+    while(block_tag != 0)
+    {
+        DB_BLOCK_T db_block;
+        uint32_t calcualte_crc = Crc32_Api_Init();
+        DB_SYS_DATA_INFO_LIST_ENTRY_T sys_data_info_in_block;
+        DB_SYS_DATA_INFO_LIST_NODE_T *p_result_list_node, *p_block_list_node;
+
+        db_sys_data_info_list_entry_init(&sys_data_info_in_block);
+        read_db_block(p_db_set_info, block_tag, &db_block);
+
+        for(uint32_t i = 0; i < db_block.valid_record_num; i++)
+        {
+            DB_SYS_DATA_INFO_LIST_NODE_T *p_node = Mema_Api_Alloc(MEMA_USER_FACILEDB, sizeof(DB_SYS_DATA_INFO_LIST_NODE_T));
+            uint8_t *p_sys_record = db_block.block_data + (i * get_db_sys_record_size());
+
+            db_sys_data_info_list_node_init(p_node);
+
+            p_node->sys_data_info.block_tag = block_tag;
+            p_node->sys_data_info.created_time = db_block.created_time;
+            
+            memcpy(&(p_node->sys_data_info.sys_record.data_tag), p_sys_record, sizeof(p_node->sys_data_info.sys_record.data_tag));
+            p_sys_record += sizeof(p_node->sys_data_info.sys_record.data_tag);
+            memcpy(&(p_node->sys_data_info.sys_record.action_32), p_sys_record, sizeof(p_node->sys_data_info.sys_record.action_32));
+
+            // check valid
+            assert(p_node->sys_data_info.block_tag <= p_db_set_info->db_set_properties.block_num);
+            assert(p_node->sys_data_info.sys_record.data_tag <= p_db_set_info->db_set_properties.data_num);
+            assert(p_node->sys_data_info.sys_record.action < DB_SYS_ACTION_TYPE_NUM);
+
+            calcualte_crc = Crc32_Api_Calc(calcualte_crc, &(p_node->sys_data_info.sys_record.data_tag), sizeof(p_node->sys_data_info.sys_record.data_tag));
+            calcualte_crc = Crc32_Api_Calc(calcualte_crc, &(p_node->sys_data_info.sys_record.action_32), sizeof(p_node->sys_data_info.sys_record.action_32));
+
+            // append node to block specific list, insertion sort, ascending order (p_next)
+            for(p_block_list_node = sys_data_info_in_block.p_tail; p_block_list_node != NULL; p_block_list_node = p_block_list_node->p_prev)
+            {
+                if(p_block_list_node->sys_data_info.sys_record.data_tag < p_node->sys_data_info.sys_record.data_tag)
+                {
+                    break;
+                }
+            }
+            if(p_block_list_node == NULL)
+            {
+                // append to head
+                p_node->p_next = sys_data_info_in_block.p_head;
+                if(sys_data_info_in_block.p_head != NULL)
+                {
+                    sys_data_info_in_block.p_head->p_prev = p_node;
+                }
+                sys_data_info_in_block.p_head = p_node;
+
+                // no existed node
+                if(sys_data_info_in_block.p_tail == NULL)
+                {
+                    sys_data_info_in_block.p_tail = p_node;
+                }
+            }
+            else
+            {
+                p_node->p_next = p_block_list_node->p_next;
+                p_node->p_prev = p_block_list_node;
+
+                if(p_block_list_node->p_next == NULL)
+                {
+                    // append to tail
+                    sys_data_info_in_block.p_tail = p_node;
+                }
+                else
+                {
+                    p_block_list_node->p_next->p_prev = p_node;
+                }
+                p_block_list_node->p_next = p_node;
+            }
+            sys_data_info_in_block.list_length++;
+        }
+
+        // check record crc
+        if(calcualte_crc != db_block.record_crc32)
+        {
+            assert(0);
+        }
+
+        // append block specific list (ascending order) into result list (ascending order)
+        p_block_list_node = sys_data_info_in_block.p_head;
+        p_result_list_node = p_entry->p_head;
+        while(p_block_list_node && p_result_list_node)
+        {
+            if(p_block_list_node->sys_data_info.sys_record.data_tag < p_result_list_node->sys_data_info.sys_record.data_tag)
+            {
+                DB_SYS_DATA_INFO_LIST_NODE_T *p_block_list_next_node = p_block_list_node->p_next;
+
+                // append to p_result_list_node->p_prev
+                if(p_result_list_node->p_prev == NULL)
+                {
+                    // append as start node
+                    p_block_list_node->p_prev = NULL;
+                    p_block_list_node->p_next = p_result_list_node;
+                    p_result_list_node->p_prev = p_block_list_node;
+
+                    p_entry->p_head = p_block_list_node;
+                }
+                else
+                {
+                    p_result_list_node->p_prev->p_next = p_block_list_node;
+                    p_block_list_node->p_prev = p_result_list_node->p_prev;
+                    p_result_list_node->p_prev = p_block_list_node;
+                    p_block_list_node->p_next = p_result_list_node;
+                }
+
+                p_block_list_node = p_block_list_next_node;
+            }
+            else
+            {
+                p_result_list_node = p_result_list_node->p_next;
+            }
+        }
+
+        if(p_block_list_node != NULL)
+        {
+            // append to the tail of the result list
+            if(p_entry->p_head == NULL)
+            {
+                // result list is empty
+                p_entry->p_head = p_block_list_node;
+                p_entry->p_tail = sys_data_info_in_block.p_tail;
+                p_block_list_node->p_prev = NULL;
+            }
+            else
+            {
+                p_entry->p_tail->p_next = p_block_list_node;
+                p_block_list_node->p_prev = p_entry->p_tail;
+                p_entry->p_tail = sys_data_info_in_block.p_tail;
+            }
+        }
+
+        sys_data_num += sys_data_info_in_block.list_length;
+        p_entry->list_length += sys_data_info_in_block.list_length;
+        block_tag = db_block.prev_block_tag;
+    }
+
+    return sys_data_num;
+}
+
 #if ENABLE_DB_INDEX
 bool FacileDB_Api_Make_Record_Index(char *p_db_set_name, FACILEDB_RECORD_T *p_faciledb_record)
 {
@@ -2105,9 +2340,9 @@ bool FacileDB_Api_Make_Record_Index(char *p_db_set_name, FACILEDB_RECORD_T *p_fa
 
     p_db_set_info = load_and_lock_db_set_info(p_db_set_name);
     unlock_db_context_sync();
-    if(p_db_set_info == NULL)
+    if (p_db_set_info == NULL)
     {
-        return false;    
+        return false;
     }
 
     db_record_info_init(&target_db_record);

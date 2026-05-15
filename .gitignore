@@ -6,3 +6,7 @@ bin
 *.sh
 
 ~$FacileDB.pptx
+
+**/*.md
+!README.md
+!readme.md
