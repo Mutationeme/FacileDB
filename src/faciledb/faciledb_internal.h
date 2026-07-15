@@ -22,6 +22,7 @@
 
 #include "faciledb_record_value_type.h"
 #include "faciledb.h"
+#include "hash.h"
 
 #if ENABLE_DB_INDEX
 #include "faciledb_index.h"
@@ -49,21 +50,35 @@ typedef enum
 
 typedef enum
 {
-    DB_SYS_ACTION_TYPE_DELETE,
+    DB_SYS_RECORD_TYPE_DELETE,
+    DB_SYS_RECORD_TYPE_INDEX_SEQ_NUM_CHECKPOINT,
 
-    DB_SYS_ACTION_TYPE_INAVLID,
-    DB_SYS_ACTION_TYPE_NUM = DB_SYS_ACTION_TYPE_INAVLID
-} DB_SYS_ACTION_TYPE_E;
+    DB_SYS_RECORD_TYPE_INAVLID,
+    DB_SYS_RECORD_TYPE_NUM = DB_SYS_RECORD_TYPE_INAVLID
+} DB_SYS_RECORD_TYPE_E;
 
-// Struct definition
+// Struct / union definition
+
+typedef union DB_SYS_RECORD_PAYLOAD_U
+{
+    uint64_t data_tag; // DB_SYS_RECORD_TYPE_DELETE
+    struct             // DB_SYS_RRCORD_TYPE_INDEX_SEQ_NUM_CHECKPOINT
+    {
+        HASH_VALUE_T index_key_hash;
+        uint32_t index_seq_num;
+    };
+    
+} DB_SYS_RECORD_PAYLOAD_U;
+
 typedef struct
 {
-    uint64_t data_tag; 
     union
     {
-        DB_SYS_ACTION_TYPE_E action;
-        uint32_t action_32;
+        DB_SYS_RECORD_TYPE_E type;
+        uint32_t type_32;
     };
+
+    DB_SYS_RECORD_PAYLOAD_U payload;
 } DB_SYS_RECORD_T;
 
 typedef struct
@@ -102,7 +117,7 @@ typedef struct
 
 typedef struct
 {
-    uint64_t seq_num; // // Monotonically increasing sequence used to determine the latest valid header during recovery.
+    uint64_t seq_num; // Monotonically increasing sequence used to determine the latest valid header during recovery.
     uint64_t block_num;
     uint64_t created_time;
     uint64_t modified_time;
@@ -122,7 +137,8 @@ typedef struct
     uint32_t set_name_size;
     void *p_set_name;
 
-    DB_SYS_DATA_INFO_LIST_ENTRY_T sys_data_list_entry;
+    DB_SYS_DATA_INFO_LIST_ENTRY_T delete_list_entry;
+    DB_SYS_DATA_INFO_LIST_ENTRY_T index_checkpoint_list_entry;
 } DB_SET_INFO_T;
 
 typedef struct
@@ -186,7 +202,7 @@ typedef struct
     uint64_t modified_time;
     uint32_t deleted;
     uint32_t valid_record_num;   // The number of record in the data in the data, and numbers of sys records in the current block.
-    uint32_t record_crc32;       // foreach(record in data): db_record_properties + p_key + p_value || foreach(sys_record in block): data_tag + action
+    uint32_t record_crc32;       // foreach(record in data): db_record_properties + p_key + p_value || foreach(sys_record in block): data_tag + type
     uint32_t block_header_crc32; // crc32 of the above values (doesn't include block_crc32 itself)
 
     uint8_t block_data[FACILEDB_BLOCK_DATA_SIZE]; // store db_records.
@@ -272,8 +288,13 @@ bool extract_db_data_info_from_db_blocks(DB_DATA_INFO_T *p_db_data_info, uint64_
 #if ENABLE_DB_INDEX
 bool get_db_index_directory_path(char *p_db_index_directory_path);
 INDEX_ID_TYPE_E get_db_index_id_type(FACILEDB_RECORD_VALUE_TYPE_E record_value_type);
-char *set_db_index_key(void *db_set_name, uint32_t set_name_size, void *p_key, uint32_t key_size);
-void insert_db_record_index(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_db_record_info, DB_INDEX_PAYLOAD_T *p_db_index_payload);
+size_t get_db_index_key_size(uint32_t set_name_size, uint32_t record_key_size);
+void set_db_index_key(char *dest, void *db_set_name, uint32_t set_name_size, void *p_key, uint32_t key_size);
+void insert_db_record_index(char *p_index_key, DB_SYS_DATA_INFO_T *p_db_index_checkpoint_sys_data_info, DB_RECORD_INFO_T *p_db_record_info, DB_INDEX_PAYLOAD_T *p_db_index_payload);
+uint32_t make_db_record_index(DB_SET_INFO_T *p_db_set_info, DB_RECORD_INFO_T *p_db_record_info);
+DB_SYS_DATA_INFO_T *get_db_index_checkpoint_sys_info(DB_SYS_DATA_INFO_LIST_ENTRY_T *p_entry, char *p_index_key);
+void write_db_record_index_checkpoint_sys_data(DB_SET_INFO_T *p_db_set_info, DB_SYS_DATA_INFO_T *p_index_checkpoint_sys_info);
+void append_db_record_index_checkpoint_list_node(DB_SET_INFO_T *p_db_set_info, DB_SYS_DATA_INFO_LIST_NODE_T *p_index_checkpoint_sys_data_list_node);
 #endif // ENABLE_DB_INDEX
 
 #endif // __FACILEDB_INTERNAL_H__

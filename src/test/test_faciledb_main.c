@@ -2333,6 +2333,59 @@ void test_faciledb_delete_case4()
 }
 
 #if ENABLE_DB_INDEX
+void test_faciledb_make_index_and_search_case0()
+{
+    char case_name[] = "test_faciledb_make_index_and_search_case0";
+    test_start(case_name);
+
+    char db_set_name[] = "test_faciledb_make_index_and_search_case0";
+
+    // clang-format off
+    FACILEDB_DATA_T data[1] = {
+        {
+            // [0]
+            .record_num = 2,
+            .p_data_records = (FACILEDB_RECORD_T[]){
+                {
+                    // [0]
+                    .key_size = 2, // 'a' and '\0'
+                    .p_key = (void *)"a",
+                    .value_size = sizeof(uint32_t),
+                    .record_value_type = FACILEDB_RECORD_VALUE_TYPE_UINT32,
+                    .p_value = (void *)&(uint32_t){1}
+                },
+                {
+                    // [1]
+                    .key_size = 2,
+                    .p_key = (void *)"b",
+                    .value_size = 3,
+                    .record_value_type = FACILEDB_RECORD_VALUE_TYPE_STRING,
+                    .p_value = (void *)"bb"
+                }
+            }
+        }
+    };
+
+    FacileDB_Api_Init(test_faciledb_directory);
+    for (uint32_t i = 0; i < 1; i++)
+    {
+        FacileDB_Api_Insert_Data(db_set_name, &(data[i]));
+    }
+    // make index
+    FacileDB_Api_Make_Record_Index(db_set_name, &(data[0].p_data_records[0])); // a
+    FacileDB_Api_Close();
+
+    // Check
+    {
+        assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_FACILEDB) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_FACILEDB) == 0);
+#if ENABLE_DB_INDEX
+        assert(Mema_Api_Get_User_Usage_Size(MEMA_USER_INDEX) == 0 && Mema_Api_Get_User_Usage_Count(MEMA_USER_INDEX) == 0);
+#endif
+    }
+
+    test_end(case_name);
+}
+
 void test_faciledb_make_index_and_search_case1()
 {
     char case_name[] = "test_faciledb_make_index_and_search_case1";
@@ -2843,6 +2896,7 @@ int main()
     test_faciledb_delete_case4();
 
 #if ENABLE_DB_INDEX
+    test_faciledb_make_index_and_search_case0();
     test_faciledb_make_index_and_search_case1();
     test_faciledb_make_index_and_search_case2();
 

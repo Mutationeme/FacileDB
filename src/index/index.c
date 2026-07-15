@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <errno.h>
+#include <stddef.h>
 
 #if defined(_POSIX_VERSION)
 #define IS_POSIX_API_SUPPORT (1)
@@ -18,12 +19,13 @@
 #include <fcntl.h>
 #include <pthread.h>
 #else
-// #error "POSIX API is not supported. Please use a POSIX compliant system."
+#error "POSIX API is not supported. Please use a POSIX compliant system."
 #endif
 
 #include "index.h"
 #include "mema.h"
 #include "index_id_type.h"
+#include "crc.h"
 
 #ifndef INDEX_INFO_INSTANCE_NUM
 #define INDEX_INFO_INSTANCE_NUM (1)
@@ -72,22 +74,28 @@ typedef struct
     uint32_t child_tag[INDEX_CHILD_TAG_ORDER];
 
     INDEX_ELEMENT_T elements[INDEX_ORDER];
+
+    uint32_t crc32;
 } INDEX_NODE_T;
 
 typedef struct
 {
     // tag_num == max(tag)
-    uint32_t tag_num;
-    uint32_t root_tag;
+    uint32_t tag_num;  // Number of nodes
+    uint32_t root_tag; // Root node
     union
     {
         INDEX_ID_TYPE_E index_id_type;
         uint32_t index_id_type_32; // write and read as uint32
     };
-    // HASH_VALUE_T integrity;
+
+    uint32_t seq_num; // maps to the seq_num in faciledb, whichc is monotonically increasing sequence used to determine the latest valid header during recovery.
+    uint32_t nodes_crc32_xor; // xor of the crc32 for all nodes
 
     uint32_t key_size; // bytes
     uint8_t *p_key;    // size = key_size
+
+    uint32_t properteis_crc32; // crc32 value for the above values and doesn't include crc32 itself.
 } INDEX_PROPERTIES_T;
 
 typedef struct
@@ -163,11 +171,12 @@ void index_info_instances_init();
 void index_info_instances_close();
 INDEX_INFO_T *request_and_lock_released_index_info_instance();
 void create_new_index_file_format(INDEX_INFO_T *p_index_info, uint8_t *p_key, uint32_t key_size, INDEX_ID_TYPE_E index_id_type);
+bool read_and_check_index_file_format(INDEX_INFO_T *p_index_info, uint8_t *p_key, uint32_t key_size, uint32_t seq_num, INDEX_ID_TYPE_E index_id_type);
 
 void index_info_init(INDEX_INFO_T *p_index_info);
 void close_index_info(INDEX_INFO_T *index_info);
-INDEX_INFO_T *query_and_lock_index_info_loaded(char *p_index_key, uint32_t index_key_size, INDEX_ID_TYPE_E index_id_type);
-INDEX_INFO_T *load_and_lock_index_info(char *p_key, INDEX_ID_TYPE_E index_id_type);
+INDEX_INFO_T *query_and_lock_index_info_loaded(char *p_index_key, uint32_t index_key_size, uint32_t seq_num, INDEX_ID_TYPE_E index_id_type);
+INDEX_INFO_T *load_and_lock_index_info(char *p_key, uint32_t seq_num, INDEX_ID_TYPE_E index_id_type);
 
 void index_info_sync_init(INDEX_INFO_SYNC_T *p_index_info_sync);
 static void inline index_info_file_lock_write(INDEX_INFO_T *p_index_info);
@@ -188,10 +197,12 @@ static inline void index_info_sync_read_unblock(INDEX_INFO_T *p_index_info);
 
 void index_properties_init(INDEX_PROPERTIES_T *p_index_properties);
 void allocate_index_properties_resources(INDEX_PROPERTIES_T *p_index_properties, uint32_t key_size);
-void read_index_properties(INDEX_INFO_T *p_index_info);
+bool read_index_properties(INDEX_INFO_T *p_index_info);
 void write_index_properties(INDEX_INFO_T *p_index_info);
 size_t get_index_properties_size(INDEX_PROPERTIES_T *p_index_properties);
 void free_index_properties_resources(INDEX_PROPERTIES_T *p_index_properties);
+static inline void update_index_properties_nodes_crc32_xor(INDEX_PROPERTIES_T *p_index_properties, uint32_t old_node_crc32, uint32_t new_node_crc32);
+bool check_index_properties_nodes_crc32_xor(INDEX_INFO_T *p_index_info);
 void close_index_properties(INDEX_PROPERTIES_T *p_index_properties);
 
 void index_node_init(INDEX_NODE_T *p_index_node, uint32_t tag);
@@ -272,10 +283,13 @@ bool Index_Api_Index_Key_Exist(char *p_index_key)
     return result;
 }
 
-void Index_Api_Insert_Element(char *p_index_key, void *p_index_id, INDEX_ID_TYPE_E index_id_type, void *p_index_payload, uint32_t payload_size)
+// return value: index seq number, for db to update index sequence number in their sys info.
+// return 0 if fail.
+uint32_t Index_Api_Insert_Element(char *p_index_key, uint32_t index_seq_num, void *p_index_id, INDEX_ID_TYPE_E index_id_type, void *p_index_payload, uint32_t payload_size)
 {
     INDEX_INFO_T *p_index_info = NULL;
     INDEX_ELEMENT_T index_element;
+    uint32_t updated_index_seq_num = 0;
 
     index_element_init(&index_element);
     setup_index_element(&index_element, p_index_id, index_id_type, p_index_payload, payload_size);
@@ -285,11 +299,16 @@ void Index_Api_Insert_Element(char *p_index_key, void *p_index_id, INDEX_ID_TYPE
     {
         unlock_index_context_sync();
         free_index_element_resources(&index_element);
-        return;
+        return 0;
     }
 
-    p_index_info = load_and_lock_index_info(p_index_key, index_id_type);
+    p_index_info = load_and_lock_index_info(p_index_key, index_seq_num, index_id_type);
     unlock_index_context_sync();
+    if(p_index_info == NULL)
+    {
+        free_index_element_resources(&index_element);
+        return 0;
+    }
 
     index_info_sync_write_wait(p_index_info);
     update_index_info_status(p_index_info, INDEX_INFO_STATUS_WRITING);
@@ -298,6 +317,9 @@ void Index_Api_Insert_Element(char *p_index_key, void *p_index_id, INDEX_ID_TYPE
 
     insert_index_element(p_index_info, p_index_info->index_properties.root_tag, &index_element);
 
+    // get the latest seq num
+    updated_index_seq_num = p_index_info->index_properties.seq_num;
+
     lock_index_info_sync(p_index_info);
     index_info_file_unlock_write(p_index_info);
     update_index_info_status(p_index_info, INDEX_INFO_STATUS_READY);
@@ -305,9 +327,11 @@ void Index_Api_Insert_Element(char *p_index_key, void *p_index_id, INDEX_ID_TYPE
     unlock_index_info_sync(p_index_info);
 
     free_index_element_resources(&index_element);
+
+    return updated_index_seq_num;
 }
 
-INDEX_SEARCH_RESULT_T *Index_Api_Search_Equal(char *p_index_key, void *p_target_index_id, INDEX_ID_TYPE_E index_id_type)
+bool Index_Api_Search_Equal(char *p_index_key, uint32_t index_seq_num, void *p_target_index_id, INDEX_ID_TYPE_E index_id_type, INDEX_SEARCH_RESULT_T **pp_result)
 {
     INDEX_INFO_T *p_index_info = NULL;
     uint32_t root_tag = 0;
@@ -327,11 +351,22 @@ INDEX_SEARCH_RESULT_T *Index_Api_Search_Equal(char *p_index_key, void *p_target_
         free_index_element_resources(&target_index_element);
         search_result->p_result_array = NULL;
         search_result->result_length = 0;
-        return search_result;
+
+        *pp_result = search_result;
+        return false;
     }
 
-    p_index_info = load_and_lock_index_info(p_index_key, index_id_type);
+    p_index_info = load_and_lock_index_info(p_index_key, index_seq_num, index_id_type);
     unlock_index_context_sync();
+    if(p_index_info == NULL)
+    {
+        free_index_element_resources(&target_index_element);
+        search_result->p_result_array = NULL;
+        search_result->result_length = 0;
+
+        *pp_result = search_result;
+        return false;
+    }
 
     index_info_sync_read_wait(p_index_info);
     index_info_file_lock_read(p_index_info);
@@ -349,7 +384,8 @@ INDEX_SEARCH_RESULT_T *Index_Api_Search_Equal(char *p_index_key, void *p_target_
 
     free_index_element_resources(&target_index_element);
 
-    return search_result;
+    *pp_result = search_result;
+    return true;
 }
 
 void Index_Api_Free_Search_Result(INDEX_SEARCH_RESULT_T *p_index_search_result)
@@ -588,21 +624,27 @@ void create_new_index_file_format(INDEX_INFO_T *p_index_info, uint8_t *p_key, ui
     memcpy(p_index_properties->p_key, p_key, key_size);
     p_index_properties->key_size = key_size;
     p_index_properties->root_tag = 0;
-    // insert an empty node with node tag: 1
-    p_index_properties->tag_num = 1;
+    p_index_properties->tag_num = 0;
     p_index_properties->index_id_type = index_id_type;
+    p_index_properties->seq_num = 0;
+    p_index_properties->nodes_crc32_xor = 0;
 
-    index_node_init(&first_node, p_index_properties->tag_num);
-    p_index_properties->root_tag = first_node.tag;
-
-    // write to file
+    // write initial values to file, seq_num = 1.
     write_index_properties(p_index_info);
+
+    // insert an empty node with node tag: 1
+    index_node_init(&first_node, 1);
     write_index_node(p_index_info, &first_node);
+
+    p_index_properties->root_tag = first_node.tag;
+    p_index_properties->tag_num++;
+    update_index_properties_nodes_crc32_xor(&(p_index_info->index_properties), p_index_properties->nodes_crc32_xor, first_node.crc32);
+    write_index_properties(p_index_info); // second write for nodes_crc_xor, and the seq_num would be 2 after this write operation.
 
     free_index_node_resources(&first_node);
 }
 
-bool read_and_check_index_file_format(INDEX_INFO_T *p_index_info, uint8_t *p_key, uint32_t key_size, INDEX_ID_TYPE_E index_id_type)
+bool read_and_check_index_file_format(INDEX_INFO_T *p_index_info, uint8_t *p_key, uint32_t key_size, uint32_t seq_num, INDEX_ID_TYPE_E index_id_type)
 {
     INDEX_PROPERTIES_T *p_index_properties = &(p_index_info->index_properties);
     // create a temporary index_properties to calcualte the size.
@@ -617,11 +659,23 @@ bool read_and_check_index_file_format(INDEX_INFO_T *p_index_info, uint8_t *p_key
     {
         read_index_properties(p_index_info);
 
-        if ((p_index_properties->key_size == key_size) && (memcmp(p_index_properties->p_key, p_key, key_size) == 0) && (p_index_properties->index_id_type == index_id_type))
+        // check index key and index id type
+        if (!((p_index_properties->key_size == key_size) && (memcmp(p_index_properties->p_key, p_key, key_size) == 0) && (p_index_properties->index_id_type == index_id_type)))
         {
-            return true;
+            free_index_properties_resources(p_index_properties);
+            index_properties_init(p_index_properties);
+            return false;
         }
-        else
+
+        if(seq_num != p_index_properties->seq_num)
+        {
+            free_index_properties_resources(p_index_properties);
+            index_properties_init(p_index_properties);
+            return false;
+        }
+
+        // check integrity: index node crc and index nodes crc xor
+        if(!check_index_properties_nodes_crc32_xor(p_index_info))
         {
             free_index_properties_resources(p_index_properties);
             index_properties_init(p_index_properties);
@@ -633,6 +687,8 @@ bool read_and_check_index_file_format(INDEX_INFO_T *p_index_info, uint8_t *p_key
         return false;
     }
 #endif
+
+    return true;
 }
 
 void index_info_init(INDEX_INFO_T *p_index_info)
@@ -645,7 +701,6 @@ void index_info_init(INDEX_INFO_T *p_index_info)
 
 void close_index_info(INDEX_INFO_T *p_index_info)
 {
-    // writeback_index_properties();
     close_index_properties(&(p_index_info->index_properties));
 
     if (p_index_info->index_file != NULL)
@@ -655,7 +710,7 @@ void close_index_info(INDEX_INFO_T *p_index_info)
     }
 }
 
-INDEX_INFO_T *query_and_lock_index_info_loaded(char *p_index_key, uint32_t index_key_size, INDEX_ID_TYPE_E index_id_type)
+INDEX_INFO_T *query_and_lock_index_info_loaded(char *p_index_key, uint32_t index_key_size, uint32_t seq_num, INDEX_ID_TYPE_E index_id_type)
 {
     INDEX_INFO_T *p_index_info = NULL;
 
@@ -666,7 +721,9 @@ INDEX_INFO_T *query_and_lock_index_info_loaded(char *p_index_key, uint32_t index
     if (check_index_info_status_available(p_index_info))
     {
         uint32_t min_key_compare_length = (index_key_size > p_index_info->index_properties.key_size) ? (p_index_info->index_properties.key_size) : (index_key_size);
-        if ((index_key_size != p_index_info->index_properties.key_size) || (memcmp(p_index_info->index_properties.p_key, p_index_key, min_key_compare_length) != 0) || (index_info_instance[0].index_properties.index_id_type != index_id_type))
+        if ((index_key_size != p_index_info->index_properties.key_size) || (memcmp(p_index_info->index_properties.p_key, p_index_key, min_key_compare_length) != 0) ||
+            (index_info_instance[0].index_properties.index_id_type != index_id_type)
+        )
         {
             unlock_index_info_sync(p_index_info);
             p_index_info = NULL;
@@ -682,15 +739,23 @@ INDEX_INFO_T *query_and_lock_index_info_loaded(char *p_index_key, uint32_t index
 #endif
 }
 
-INDEX_INFO_T *load_and_lock_index_info(char *p_key, INDEX_ID_TYPE_E index_id_type)
+INDEX_INFO_T *load_and_lock_index_info(char *p_key, uint32_t seq_num, INDEX_ID_TYPE_E index_id_type)
 {
     INDEX_INFO_T *p_index_info = NULL;
     char index_file_path[INDEX_FILE_PATH_BUFFER_LENGTH] = {0};
 
-    p_index_info = query_and_lock_index_info_loaded(p_key, strlen(p_key), index_id_type);
+    p_index_info = query_and_lock_index_info_loaded(p_key, strlen(p_key), seq_num, index_id_type);
     if (p_index_info != NULL)
     {
-        return p_index_info;
+        if(seq_num == p_index_info->index_properties.seq_num)
+        {
+            return p_index_info;
+        }
+        else
+        {
+            unlock_index_info_sync(p_index_info);
+            return NULL;
+        }
     }
 
     p_index_info = request_and_lock_released_index_info_instance();
@@ -753,7 +818,8 @@ INDEX_INFO_T *load_and_lock_index_info(char *p_key, INDEX_ID_TYPE_E index_id_typ
         for (uint32_t check_time = 0; check_time < INDEX_FILE_OPEN_CHECK_TIMEOUT; check_time++)
         {
             index_info_file_lock_read(p_index_info);
-            if (read_and_check_index_file_format(p_index_info, (uint8_t *)p_key, strlen(p_key), index_id_type) == true)
+            // TODO: If seq_num check fail, there will be a 3 second delay until timeout. Modify it.
+            if (read_and_check_index_file_format(p_index_info, (uint8_t *)p_key, strlen(p_key), seq_num, index_id_type) == true)
             {
                 index_info_file_unlock_read(p_index_info);
                 timeout = false;
@@ -769,8 +835,10 @@ INDEX_INFO_T *load_and_lock_index_info(char *p_key, INDEX_ID_TYPE_E index_id_typ
 
         if (timeout)
         {
-            // TODO: error message
-            assert(0);
+            // TODO: error message, release file resource
+            fclose(p_index_info->index_file);
+            p_index_info->index_file = NULL;
+            return NULL;
         }
     }
     else
@@ -1161,6 +1229,9 @@ void index_properties_init(INDEX_PROPERTIES_T *p_index_properties)
     p_index_properties->root_tag = 0;
     p_index_properties->tag_num = 0;
     p_index_properties->index_id_type = INDEX_ID_TYPE_INVALID;
+    p_index_properties->seq_num = 0;
+    p_index_properties->properteis_crc32 = Crc32_Api_Init();
+    p_index_properties->nodes_crc32_xor = 0;
 }
 
 void allocate_index_properties_resources(INDEX_PROPERTIES_T *p_index_properties, uint32_t key_size)
@@ -1169,56 +1240,87 @@ void allocate_index_properties_resources(INDEX_PROPERTIES_T *p_index_properties,
     p_index_properties->key_size = key_size;
 }
 
-void read_index_properties(INDEX_INFO_T *p_index_info)
+bool read_index_properties(INDEX_INFO_T *p_index_info)
 {
     FILE *p_index_file = p_index_info->index_file;
-    INDEX_PROPERTIES_T *p_index_properties = &(p_index_info->index_properties);
+    INDEX_PROPERTIES_T temp;
+    uint32_t properties_crc32 = Crc32_Api_Init();
+
+    index_properties_init(&temp);
 
 #if IS_POSIX_API_SUPPORT
     int fd = fileno(p_index_file);
     off_t offset = 0;
 
     // Read tag_num and root_tag
-    pread(fd, &(p_index_properties->tag_num), sizeof(p_index_properties->tag_num), offset);
-    offset += sizeof(p_index_properties->tag_num);
-    pread(fd, &(p_index_properties->root_tag), sizeof(p_index_properties->root_tag), offset);
-    offset += sizeof(p_index_properties->root_tag);
+    pread(fd, &(temp.tag_num), sizeof(temp.tag_num), offset);
+    offset += sizeof(temp.tag_num);
+    pread(fd, &(temp.root_tag), sizeof(temp.root_tag), offset);
+    offset += sizeof(temp.root_tag);
 
     // Read index_id_type (save as uint32)
-    pread(fd, &(p_index_properties->index_id_type_32), sizeof(p_index_properties->index_id_type_32), offset);
-    offset += sizeof(p_index_properties->index_id_type_32);
+    pread(fd, &(temp.index_id_type_32), sizeof(temp.index_id_type_32), offset);
+    offset += sizeof(temp.index_id_type_32);
+
+    // Read seq_num and node_crc32
+    pread(fd, &(temp.seq_num), sizeof(temp.seq_num), offset);
+    offset += sizeof(temp.seq_num);
+    pread(fd, &(temp.nodes_crc32_xor), sizeof(temp.nodes_crc32_xor), offset);
+    offset += sizeof(temp.nodes_crc32_xor);
 
     // Read key_size
-    pread(fd, &(p_index_properties->key_size), sizeof(p_index_properties->key_size), offset);
-    offset += sizeof(p_index_properties->key_size);
+    pread(fd, &(temp.key_size), sizeof(temp.key_size), offset);
+    offset += sizeof(temp.key_size);
 
     // Allocate buffer
-    allocate_index_properties_resources(p_index_properties, p_index_properties->key_size);
+    allocate_index_properties_resources(&temp, temp.key_size);
     // Read key
-    pread(fd, p_index_properties->p_key, p_index_properties->key_size, offset);
+    pread(fd, temp.p_key, temp.key_size, offset);
+    offset += temp.key_size;
 
-#else  // IS_POSIX_API_SUPPORT
-    fseek(p_index_file, 0, SEEK_SET);
-    // Read tag_num and root_tag
-    fread(&(p_index_properties->tag_num), sizeof(p_index_properties->tag_num), 1, p_index_file);
-    fread(&(p_index_properties->root_tag), sizeof(p_index_properties->root_tag), 1, p_index_file);
-
-    // Read index_id_type (save as uint32)
-    fread(&(p_index_properties->index_id_type_32), sizeof(p_index_properties->index_id_type_32), 1, p_index_file);
-    assert(p_index_properties->index_id_type <= INDEX_ID_TYPE_NUM);
-
-    // Read key_size
-    fread(&(p_index_properties->key_size), sizeof(p_index_properties->key_size), 1, p_index_file);
-    // Read key
-    p_index_properties->p_key = Mema_Api_Alloc(MEMA_USER_INDEX, p_index_properties->key_size);
-    fread(p_index_properties->p_key, p_index_properties->key_size, 1, p_index_file);
+    // Read properties crc32
+    pread(fd, &(temp.properteis_crc32), sizeof(temp.properteis_crc32), offset);
 #endif // IS_POSIX_API_SUPPORT
+
+    properties_crc32 = Crc32_Api_Calc(properties_crc32, &(temp.tag_num), sizeof(temp.tag_num));
+    properties_crc32 = Crc32_Api_Calc(properties_crc32, &(temp.root_tag), sizeof(temp.root_tag));
+    properties_crc32 = Crc32_Api_Calc(properties_crc32, &(temp.index_id_type_32), sizeof(temp.index_id_type_32));
+    properties_crc32 = Crc32_Api_Calc(properties_crc32, &(temp.seq_num), sizeof(temp.seq_num));
+    properties_crc32 = Crc32_Api_Calc(properties_crc32, &(temp.nodes_crc32_xor), sizeof(temp.nodes_crc32_xor));
+    properties_crc32 = Crc32_Api_Calc(properties_crc32, &(temp.key_size), sizeof(temp.key_size));
+
+    properties_crc32 = Crc32_Api_Calc(properties_crc32, temp.p_key, temp.key_size);
+
+    if(properties_crc32 != temp.properteis_crc32)
+    {
+        free_index_properties_resources(&temp);
+        return false;
+    }
+    else
+    {
+        // shallow copy
+        memcpy(&(p_index_info->index_properties), &temp, sizeof(INDEX_PROPERTIES_T));
+        return true;
+    }
 }
 
 void write_index_properties(INDEX_INFO_T *p_index_info)
 {
     FILE *p_index_file = p_index_info->index_file;
     INDEX_PROPERTIES_T *p_index_properties = &(p_index_info->index_properties);
+    uint32_t *properties_crc32 = &(p_index_properties->properteis_crc32);
+
+    p_index_properties->seq_num++;
+
+    *properties_crc32 = Crc32_Api_Init();
+    *properties_crc32 = Crc32_Api_Calc(*properties_crc32, &(p_index_properties->tag_num), sizeof(p_index_properties->tag_num));
+    *properties_crc32 = Crc32_Api_Calc(*properties_crc32, &(p_index_properties->root_tag), sizeof(p_index_properties->root_tag));
+    *properties_crc32 = Crc32_Api_Calc(*properties_crc32, &(p_index_properties->index_id_type_32), sizeof(p_index_properties->index_id_type_32));
+    *properties_crc32 = Crc32_Api_Calc(*properties_crc32, &(p_index_properties->seq_num), sizeof(p_index_properties->seq_num));
+    *properties_crc32 = Crc32_Api_Calc(*properties_crc32, &(p_index_properties->nodes_crc32_xor), sizeof(p_index_properties->nodes_crc32_xor));
+    *properties_crc32 = Crc32_Api_Calc(*properties_crc32, &(p_index_properties->key_size), sizeof(p_index_properties->key_size));
+
+    *properties_crc32 = Crc32_Api_Calc(*properties_crc32, p_index_properties->p_key, p_index_properties->key_size);
 
 #if IS_POSIX_API_SUPPORT
     int fd = fileno(p_index_file);
@@ -1234,38 +1336,36 @@ void write_index_properties(INDEX_INFO_T *p_index_info)
     pwrite(fd, &(p_index_properties->index_id_type_32), sizeof(p_index_properties->index_id_type_32), offset);
     offset += sizeof(p_index_properties->index_id_type_32);
 
+    // write seq_num and node_crc32
+    pwrite(fd, &(p_index_properties->seq_num), sizeof(p_index_properties->seq_num), offset);
+    offset += sizeof(p_index_properties->seq_num);
+    pwrite(fd, &(p_index_properties->nodes_crc32_xor), sizeof(p_index_properties->nodes_crc32_xor), offset);
+    offset += sizeof(p_index_properties->nodes_crc32_xor);
+
     // Write key_size
     pwrite(fd, &(p_index_properties->key_size), sizeof(p_index_properties->key_size), offset);
     offset += sizeof(p_index_properties->key_size);
     // Write key
     pwrite(fd, p_index_properties->p_key, p_index_properties->key_size, offset);
+    offset += p_index_properties->key_size;
 
-#else  // IS_POSIX_API_SUPPORT
-    fseek(p_index_file, 0, SEEK_SET);
+    // write properties_crc32
+    pwrite(fd, &(p_index_properties->properteis_crc32), sizeof(p_index_properties->properteis_crc32), offset);
+    offset += sizeof(p_index_properties->properteis_crc32);
 
-    // Write tag_num & root_tag
-    fwrite(&(p_index_properties->tag_num), sizeof(p_index_properties->tag_num), 1, p_index_file);
-    fwrite(&(p_index_properties->root_tag), sizeof(p_index_properties->root_tag), 1, p_index_file);
-
-    // write index_id_type as uint32
-    fwrite(&(p_index_properties->index_id_type_32), sizeof(p_index_properties->index_id_type_32), 1, p_index_file);
-
-    // Write key_size
-    fwrite(&(p_index_properties->key_size), sizeof(p_index_properties->key_size), 1, p_index_file);
-    // Write key
-    fwrite(p_index_properties->p_key, p_index_properties->key_size, 1, p_index_file);
-
-    fflush(p_index_file);
+    // ensure data is written to disk
+    fsync(fd);
 #endif // IS_POSIX_API_SUPPORT
 }
 
 size_t get_index_properties_size(INDEX_PROPERTIES_T *p_index_properties)
 {
     size_t index_properties_size = 0;
-    index_properties_size += sizeof(p_index_properties->tag_num) + sizeof(p_index_properties->root_tag) + sizeof(p_index_properties->index_id_type);
+    index_properties_size += sizeof(p_index_properties->tag_num) + sizeof(p_index_properties->root_tag) + sizeof(p_index_properties->index_id_type) + sizeof(p_index_properties->seq_num) + sizeof(p_index_properties->nodes_crc32_xor);
     // key_size & key
     index_properties_size += sizeof(p_index_properties->key_size) + p_index_properties->key_size;
-
+    // properties_crc
+    index_properties_size += sizeof(p_index_properties->properteis_crc32);
     return index_properties_size;
 }
 
@@ -1275,6 +1375,36 @@ void free_index_properties_resources(INDEX_PROPERTIES_T *p_index_properties)
     {
         Mema_Api_Free(MEMA_USER_INDEX, p_index_properties->p_key);
         p_index_properties->p_key = NULL;
+    }
+}
+
+static inline void update_index_properties_nodes_crc32_xor(INDEX_PROPERTIES_T *p_index_properties, uint32_t old_node_crc32, uint32_t new_node_crc32)
+{
+    p_index_properties->nodes_crc32_xor ^= old_node_crc32 ^ new_node_crc32;
+}
+
+bool check_index_properties_nodes_crc32_xor(INDEX_INFO_T *p_index_info)
+{
+    uint32_t crc32_xor = p_index_info->index_properties.nodes_crc32_xor;
+    INDEX_NODE_T node;
+
+    for(uint32_t i = 1; i <= p_index_info->index_properties.tag_num; i++)
+    {
+        index_node_init(&node, 0);
+        read_index_node(p_index_info, i, &node);
+
+        crc32_xor ^= node.crc32;
+
+        free_index_node_resources(&node);
+    }
+
+    if(crc32_xor == 0)
+    {
+        return true;
+    }
+    else
+    {
+        return false;
     }
 }
 
@@ -1302,6 +1432,27 @@ void write_index_node(INDEX_INFO_T *p_index_info, INDEX_NODE_T *p_index_node)
     uint32_t node_tag = p_index_node->tag;
     off_t node_offset = get_node_offset(&(p_index_info->index_properties), node_tag);
     FILE *p_index_file = p_index_info->index_file;
+    uint32_t *crc32 = &(p_index_node->crc32);
+    uint32_t index_id_size = Index_Id_Type_Get_Size(p_index_info->index_properties.index_id_type);
+
+    // calculate crc32
+    *crc32 = Crc32_Api_Init();
+    *crc32 = Crc32_Api_Calc(*crc32, &(p_index_node->tag), sizeof(p_index_node->tag));
+    *crc32 = Crc32_Api_Calc(*crc32, &(p_index_node->level), sizeof(p_index_node->level));
+    *crc32 = Crc32_Api_Calc(*crc32, &(p_index_node->length), sizeof(p_index_node->length));
+    *crc32 = Crc32_Api_Calc(*crc32, &(p_index_node->parent_tag), sizeof(p_index_node->parent_tag));
+    *crc32 = Crc32_Api_Calc(*crc32, &(p_index_node->next_tag), sizeof(p_index_node->next_tag));
+    // child tag, child tag number is length + 1
+    for(uint32_t i = 0; i < (p_index_node->length + 1); i++)
+    {
+        *crc32 = Crc32_Api_Calc(*crc32, &(p_index_node->child_tag[i]), sizeof(p_index_node->child_tag[i]));
+    }
+    // index element
+    for(uint32_t i = 0; i < p_index_node->length; i++)
+    {
+        *crc32 = Crc32_Api_Calc(*crc32, p_index_node->elements[i].p_index_id, index_id_size);
+        *crc32 = Crc32_Api_Calc(*crc32, p_index_node->elements[i].index_payload, INDEX_PAYLOAD_SIZE);
+    }
 
 #if IS_POSIX_API_SUPPORT
     int fd = fileno(p_index_file);
@@ -1318,30 +1469,26 @@ void write_index_node(INDEX_INFO_T *p_index_info, INDEX_NODE_T *p_index_node)
     pwrite(fd, &(p_index_node->next_tag), sizeof(p_index_node->next_tag), node_offset);
     node_offset += sizeof(p_index_node->next_tag);
     pwrite(fd, p_index_node->child_tag, sizeof(p_index_node->child_tag[0]) * INDEX_CHILD_TAG_ORDER, node_offset);
+    // node_offset += sizeof(p_index_node->child_tag[0]) * INDEX_CHILD_TAG_ORDER;
+#endif
 
     write_index_elements(p_index_info, node_tag, 0, INDEX_ORDER, p_index_node->elements);
-#else
-    fseek(p_index_file, node_offset, SEEK_SET);
 
-    // write static fields.
-    fwrite(&(p_index_node->tag), sizeof(p_index_node->tag), 1, p_index_file);
-    fwrite(&(p_index_node->level), sizeof(p_index_node->length), 1, p_index_file);
-    fwrite(&(p_index_node->length), sizeof(p_index_node->length), 1, p_index_file);
-    fwrite(&(p_index_node->parent_tag), sizeof(p_index_node->parent_tag), 1, p_index_file);
-    fwrite(&(p_index_node->next_tag), sizeof(p_index_node->next_tag), 1, p_index_file);
-    fwrite(p_index_node->child_tag, sizeof(p_index_node->child_tag[0]), INDEX_CHILD_TAG_ORDER, p_index_file);
-
-    // write dynamic fields
-    // TODO: only write the changed elements.
-    write_index_elements(p_index_info, node_tag, 0, INDEX_ORDER, p_index_node->elements);
-
-    fflush(p_index_file);
+    node_offset = get_index_element_offset(&(p_index_info->index_properties), node_tag, INDEX_ORDER);
+#if IS_POSIX_API_SUPPORT
+    pwrite(fd, &(p_index_node->crc32), sizeof(p_index_node->crc32), node_offset);
 #endif // IS_POSIX_API_SUPPORT
 }
 
 // return sucessful or not
 bool read_index_node(INDEX_INFO_T *p_index_info, uint32_t tag, INDEX_NODE_T *p_index_node)
 {
+    FILE *p_index_file = NULL;
+    off_t node_offset = 0;
+    uint32_t crc32 = Crc32_Api_Init();
+    INDEX_NODE_T temp;
+    uint32_t index_id_size = Index_Id_Type_Get_Size(p_index_info->index_properties.index_id_type);
+
     // tag is a 1-index number and it should smaller than the tag number.
     if (p_index_info->index_properties.tag_num < tag)
     {
@@ -1349,39 +1496,60 @@ bool read_index_node(INDEX_INFO_T *p_index_info, uint32_t tag, INDEX_NODE_T *p_i
         return false;
     }
 
-    FILE *p_index_file = p_index_info->index_file;
-    off_t node_offset = get_node_offset(&(p_index_info->index_properties), tag);
+    p_index_file = p_index_info->index_file;
+    node_offset = get_node_offset(&(p_index_info->index_properties), tag);
+    index_node_init(&temp, 0);
 
 #if IS_POSIX_API_SUPPORT
     int fd = fileno(p_index_file);
 
     // read static fields
-    pread(fd, &(p_index_node->tag), sizeof(p_index_node->tag), node_offset);
-    node_offset += sizeof(p_index_node->tag);
-    pread(fd, &(p_index_node->level), sizeof(p_index_node->level), node_offset);
-    node_offset += sizeof(p_index_node->level);
-    pread(fd, &(p_index_node->length), sizeof(p_index_node->length), node_offset);
-    node_offset += sizeof(p_index_node->length);
-    pread(fd, &(p_index_node->parent_tag), sizeof(p_index_node->parent_tag), node_offset);
-    node_offset += sizeof(p_index_node->parent_tag);
-    pread(fd, &(p_index_node->next_tag), sizeof(p_index_node->next_tag), node_offset);
-    node_offset += sizeof(p_index_node->next_tag);
-    pread(fd, p_index_node->child_tag, sizeof(p_index_node->child_tag[0]) * INDEX_CHILD_TAG_ORDER, node_offset);
-
-#else  // IS_POSIX_API_SUPPORT
-    fseek(p_index_file, node_offset, SEEK_SET);
-    // read static fields
-    fread(&(p_index_node->tag), sizeof(p_index_node->tag), 1, p_index_file);
-    fread(&(p_index_node->level), sizeof(p_index_node->level), 1, p_index_file);
-    fread(&(p_index_node->length), sizeof(p_index_node->length), 1, p_index_file);
-    fread(&(p_index_node->parent_tag), sizeof(p_index_node->parent_tag), 1, p_index_file);
-    fread(&(p_index_node->next_tag), sizeof(p_index_node->next_tag), 1, p_index_file);
-    fread(p_index_node->child_tag, sizeof(p_index_node->child_tag[0]), INDEX_CHILD_TAG_ORDER, p_index_file);
+    pread(fd, &(temp.tag), sizeof(temp.tag), node_offset);
+    node_offset += sizeof(temp.tag);
+    pread(fd, &(temp.level), sizeof(temp.level), node_offset);
+    node_offset += sizeof(temp.level);
+    pread(fd, &(temp.length), sizeof(temp.length), node_offset);
+    node_offset += sizeof(temp.length);
+    pread(fd, &(temp.parent_tag), sizeof(temp.parent_tag), node_offset);
+    node_offset += sizeof(temp.parent_tag);
+    pread(fd, &(temp.next_tag), sizeof(temp.next_tag), node_offset);
+    node_offset += sizeof(temp.next_tag);
+    pread(fd, temp.child_tag, sizeof(temp.child_tag[0]) * INDEX_CHILD_TAG_ORDER, node_offset);
 #endif // IS_POSIX_API_SUPPORT
 
     // read dynamic fields
-    read_index_elements(p_index_info, tag, 0, INDEX_ORDER, p_index_node->elements);
+    read_index_elements(p_index_info, tag, 0, INDEX_ORDER, temp.elements);
+    
+    // read crc32
+    node_offset = get_index_element_offset(&(p_index_info->index_properties), tag, INDEX_ORDER);
+#if IS_POSIX_API_SUPPORT
+    pread(fd, &(temp.crc32), sizeof(temp.crc32), node_offset);
+#endif
 
+    // calculate crc32
+    crc32 = Crc32_Api_Calc(crc32, &(temp.tag), sizeof(temp.tag));
+    crc32 = Crc32_Api_Calc(crc32, &(temp.level), sizeof(temp.level));
+    crc32 = Crc32_Api_Calc(crc32, &(temp.length), sizeof(temp.length));
+    crc32 = Crc32_Api_Calc(crc32, &(temp.parent_tag), sizeof(temp.parent_tag));
+    crc32 = Crc32_Api_Calc(crc32, &(temp.next_tag), sizeof(temp.next_tag));
+    for(uint32_t i = 0; i < temp.length + 1; i++)
+    {
+        crc32 = Crc32_Api_Calc(crc32, &(temp.child_tag[i]), sizeof(temp.child_tag[i]));
+    }
+    for(uint32_t i = 0; i < temp.length; i++)
+    {
+        crc32 = Crc32_Api_Calc(crc32, temp.elements[i].p_index_id, index_id_size);
+        crc32 = Crc32_Api_Calc(crc32, temp.elements[i].index_payload, INDEX_PAYLOAD_SIZE);
+    }
+
+    if(crc32 != temp.crc32)
+    {
+        free_index_node_resources(&temp);
+        return false;
+    }
+
+    // shallow copy index node
+    memcpy(p_index_node, &temp, sizeof(INDEX_NODE_T));
     return true;
 }
 
@@ -1389,10 +1557,10 @@ off_t get_node_offset(INDEX_PROPERTIES_T *p_index_properties, uint32_t tag)
 {
     size_t index_properties_size = get_index_properties_size(p_index_properties);
     size_t index_element_size = Index_Id_Type_Get_Size(p_index_properties->index_id_type) + INDEX_PAYLOAD_SIZE;
-    // tag + level + length + parent_tag + next_tag + child_tag[INDEX_CHILD_TAG_ORDER] + elements[INDEX_ORDER]
-    size_t index_node_size = (sizeof(uint32_t) * (INDEX_CHILD_TAG_ORDER + 5)) + (index_element_size * INDEX_ORDER);
+    // tag + level + length + parent_tag + next_tag + child_tag[INDEX_CHILD_TAG_ORDER] + elements[INDEX_ORDER] + crc32
+    size_t index_node_size = (sizeof(uint32_t) * 5) + (sizeof(uint32_t) * INDEX_CHILD_TAG_ORDER) + (INDEX_ORDER * index_element_size) + sizeof(uint32_t);
 
-    // tag is a 1-based number.
+    // // tag is a 1-based number.
     return (index_properties_size + ((tag - 1) * index_node_size));
 }
 
@@ -1651,10 +1819,15 @@ void split_child_tags_into_two_index_node(INDEX_INFO_T *p_index_info, uint32_t *
     // update the parent tag of the second half child nodes to sibling node tag.
     for (uint32_t i = 0; i < second_half_length; i++)
     {
+        uint32_t old_index_node_crc32 = Crc32_Api_Init();
+
         index_node_init(&second_half_child_index_node, p_index_node_sibling->child_tag[i]);
         read_index_node(p_index_info, p_index_node_sibling->child_tag[i], &second_half_child_index_node);
         second_half_child_index_node.parent_tag = p_index_node_sibling->tag;
+        old_index_node_crc32 = second_half_child_index_node.crc32;
         write_index_node(p_index_info, &second_half_child_index_node);
+        update_index_properties_nodes_crc32_xor(&(p_index_info->index_properties), old_index_node_crc32, second_half_child_index_node.crc32);
+
         free_index_node_resources(&second_half_child_index_node);
     }
 }
@@ -1665,6 +1838,7 @@ void insert_index_element_handler(INDEX_INFO_T *p_index_info, INDEX_NODE_T *p_in
     uint32_t position = find_element_position_in_the_node(p_index_node, p_index_element, index_id_type);
     uint32_t tag_position = position + 1;
     INDEX_PROPERTIES_T *p_index_properties = &(p_index_info->index_properties);
+    uint32_t index_node_crc32 = p_index_node->crc32;
 
     if (p_index_node->length >= INDEX_ORDER)
     {
@@ -1751,12 +1925,14 @@ void insert_index_element_handler(INDEX_INFO_T *p_index_info, INDEX_NODE_T *p_in
 
         // write sibling node into file
         write_index_node(p_index_info, &new_sibling_node);
+        update_index_properties_nodes_crc32_xor(&(p_index_info->index_properties), 0, new_sibling_node.crc32);
 
         // write current node into file.
         write_index_node(p_index_info, p_index_node);
+        update_index_properties_nodes_crc32_xor(&(p_index_info->index_properties), index_node_crc32, p_index_node->crc32);
 
         // TODO: update index properties only when close index.
-        write_index_properties(p_index_info);
+        // write_index_properties(p_index_info);
 
         // Insert the [mid] element to the parent node.
         insert_index_element_handler(p_index_info, &parent_node, &(index_elements_buffer[mid_position]), new_sibling_node.tag);
@@ -1797,6 +1973,7 @@ void insert_index_element_handler(INDEX_INFO_T *p_index_info, INDEX_NODE_T *p_in
 
         // write current node into file.
         write_index_node(p_index_info, p_index_node);
+        update_index_properties_nodes_crc32_xor(&(p_index_info->index_properties), index_node_crc32, p_index_node->crc32);
     }
 }
 
@@ -1824,6 +2001,7 @@ void insert_index_element(INDEX_INFO_T *p_index_info, uint32_t tag, INDEX_ELEMEN
     {
         // Current node is a leaf node.
         insert_index_element_handler(p_index_info, &index_node, p_index_element, 0);
+        write_index_properties(p_index_info);
     }
 
     free_index_node_resources(&index_node);

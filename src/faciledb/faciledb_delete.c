@@ -29,8 +29,8 @@ void delete_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_LIST_ENTRY_T *p_d
     for (uint32_t i = 0; i < db_sys_data_info_num; i++)
     {
         db_sys_data_info_init(&(p_db_sys_data_info_array[i]));
-        p_db_sys_data_info_array[i].sys_record.data_tag = p_current_node->db_data_info.data_tag;
-        p_db_sys_data_info_array[i].sys_record.action = DB_SYS_ACTION_TYPE_DELETE;
+        p_db_sys_data_info_array[i].sys_record.payload.data_tag = p_current_node->db_data_info.data_tag;
+        p_db_sys_data_info_array[i].sys_record.type = DB_SYS_RECORD_TYPE_DELETE;
         
         p_current_node = p_current_node->p_next;
     }
@@ -51,12 +51,12 @@ void delete_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_LIST_ENTRY_T *p_d
             uint8_t *p_db_block_data_dest = db_block.block_data + (j * get_db_sys_record_size());
             DB_SYS_RECORD_T *p_db_sys_record_src = &(p_db_sys_data_info_array[(i * full_sys_record_num_per_block) + j].sys_record);
 
-            memcpy(p_db_block_data_dest, &(p_db_sys_record_src->data_tag), sizeof(p_db_sys_record_src->data_tag));
-            record_crc = Crc32_Api_Calc(record_crc, p_db_block_data_dest, sizeof(p_db_sys_record_src->data_tag));
+            memcpy(p_db_block_data_dest, &(p_db_sys_record_src->type_32), sizeof(p_db_sys_record_src->type_32));
+            record_crc = Crc32_Api_Calc(record_crc, p_db_block_data_dest, sizeof(p_db_sys_record_src->type_32));
 
-            p_db_block_data_dest += sizeof(p_db_sys_record_src->data_tag);
-            memcpy(p_db_block_data_dest, &(p_db_sys_record_src->action_32), sizeof(p_db_sys_record_src->action_32));
-            record_crc = Crc32_Api_Calc(record_crc, p_db_block_data_dest, sizeof(p_db_sys_record_src->action_32));
+            p_db_block_data_dest += sizeof(p_db_sys_record_src->type_32);
+            memcpy(p_db_block_data_dest, &(p_db_sys_record_src->payload), sizeof(p_db_sys_record_src->payload));
+            record_crc = Crc32_Api_Calc(record_crc, p_db_block_data_dest, sizeof(p_db_sys_record_src->payload));
         }
 
         delete_db_data_handler_assign_block_value(&db_block, p_db_set_info, sys_record_num_in_block, record_crc);
@@ -95,7 +95,7 @@ void delete_db_data_handler_assign_block_value(DB_BLOCK_T *p_db_block, DB_SET_IN
 // assume the p_db_sys_data_info_array is sorted
 uint32_t delete_db_data_handler_append_sys_data_list(DB_SET_INFO_T *p_db_set_info, DB_SYS_DATA_INFO_T *p_db_sys_data_info_array, uint32_t array_length)
 {
-    DB_SYS_DATA_INFO_LIST_ENTRY_T *p_entry = &(p_db_set_info->sys_data_list_entry);
+    DB_SYS_DATA_INFO_LIST_ENTRY_T *p_entry = &(p_db_set_info->delete_list_entry);
     DB_SYS_DATA_INFO_LIST_NODE_T *p_node = p_entry->p_head;
 
     for (uint32_t i = 0; i < array_length; i++)
@@ -112,7 +112,7 @@ uint32_t delete_db_data_handler_append_sys_data_list(DB_SET_INFO_T *p_db_set_inf
         }
         else
         {
-            while (p_node && (p_node->sys_data_info.sys_record.data_tag < p_db_sys_data_info_array[i].sys_record.data_tag))
+            while (p_node && (p_node->sys_data_info.sys_record.payload.data_tag < p_db_sys_data_info_array[i].sys_record.payload.data_tag))
             {
                 p_node = p_node->p_next;
             }

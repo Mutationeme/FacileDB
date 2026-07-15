@@ -181,7 +181,7 @@ FACILEDB_DATA_SEARCH_RESULT_T *FacileDB_Api_Search_Equal(char *p_db_set_name, FA
     unlock_db_context_sync();
     if(p_db_set_info == NULL)
     {
-        return NULL;
+        return p_faciledb_search_result;
     }
 
     db_record_info_init(&target_db_record);
@@ -314,3 +314,60 @@ void FacileDB_Api_Free_Search_Result(FACILEDB_DATA_SEARCH_RESULT_T *p_faciledb_s
 
     Mema_Api_Free(MEMA_USER_FACILEDB, p_faciledb_search_result);
 }
+
+#if ENABLE_DB_INDEX
+bool FacileDB_Api_Make_Record_Index(char *p_db_set_name, FACILEDB_RECORD_T *p_faciledb_record)
+{
+    DB_SET_INFO_T *p_db_set_info = NULL;
+    DB_RECORD_INFO_T target_db_record;
+    uint32_t result_data_num = 0;
+
+    if (p_faciledb_record == NULL)
+    {
+        // invalid input
+        return false;
+    }
+
+    lock_db_context_sync();
+    if (check_db_context_status(DB_CONTEXT_STATUS_READY) == false)
+    {
+        // db context is not ready
+        unlock_db_context_sync();
+        return false;
+    }
+
+    p_db_set_info = load_and_lock_db_set_info(p_db_set_name);
+    unlock_db_context_sync();
+    if (p_db_set_info == NULL)
+    {
+        return false;
+    }
+
+    db_record_info_init(&target_db_record);
+    shallow_assign_faciledb_record_to_db_record_info(&target_db_record, p_faciledb_record);
+
+    // use write lock for make index (insert new sys data blocks)
+    db_set_info_sync_write_wait(p_db_set_info);
+    update_db_set_info_status(p_db_set_info, DB_SET_INFO_STATUS_WRITING);
+    db_set_info_file_lock_write(p_db_set_info);
+    sync_latest_db_set_info(p_db_set_info);
+    unlock_db_set_info_sync(p_db_set_info);
+
+    result_data_num = make_db_record_index(p_db_set_info, &target_db_record);
+
+    lock_db_set_info_sync(p_db_set_info);
+    db_set_info_file_unlock_write(p_db_set_info);
+    update_db_set_info_status(p_db_set_info, DB_SET_INFO_STATUS_READY);
+    db_set_info_sync_write_unblock(p_db_set_info);
+    unlock_db_set_info_sync(p_db_set_info);
+
+    if (result_data_num > 0)
+    {
+        return true;
+    }
+    else
+    {
+        return false;
+    }
+}
+#endif

@@ -45,8 +45,9 @@ typedef struct
 
 void Index_Api_Init(char *p_index_directory_path);
 bool Index_Api_Index_Key_Exist(char *p_index_key);
-void Index_Api_Insert_Element(char *p_index_key, void *p_index_id, INDEX_ID_TYPE_E index_id_type, void *p_index_payload, uint32_t payload_size);
-INDEX_SEARCH_RESULT_T *Index_Api_Search_Equal(char *p_index_key, void *p_target_index_id, INDEX_ID_TYPE_E index_id_type);
+// return value: index_seq_num, 0 if fail
+uint32_t Index_Api_Insert_Element(char *p_index_key, uint32_t index_seq_num, void *p_index_id, INDEX_ID_TYPE_E index_id_type, void *p_index_payload, uint32_t payload_size);
+bool Index_Api_Search_Equal(char *p_index_key, uint32_t index_seq_num, void *p_target_index_id, INDEX_ID_TYPE_E index_id_type, INDEX_SEARCH_RESULT_T **pp_result);
 void Index_Api_Free_Search_Result(INDEX_SEARCH_RESULT_T *p_index_search_result);
 void Index_Api_Close();
 

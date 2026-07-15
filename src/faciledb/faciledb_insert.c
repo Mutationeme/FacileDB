@@ -148,29 +148,35 @@ uint32_t insert_db_data(DB_SET_INFO_T *p_db_set_info, DB_DATA_INFO_T *p_db_data_
     p_db_set_info->db_set_properties.modified_time = db_block_list_entry.p_tail->db_block.modified_time;
     // write the db block list into file.
     insert_db_data_handler_write_db_block_list(p_db_set_info, &db_block_list_entry);
-    update_to_db_set_properties_region(p_db_set_info);
 
 #if ENABLE_DB_INDEX
-    // insert index if existed
     uint64_t first_db_block_tag = db_block_list_entry.p_head->db_block.block_tag;
     for (uint32_t i = 0; i < (p_db_data_info->record_num); i++)
     {
+        DB_SYS_DATA_INFO_T *p_db_index_checkpoint_sys_data_info = NULL;
         DB_RECORD_INFO_T *p_current_db_record_info = &p_db_data_info->p_db_record_info[i];
-        char *p_index_key = set_db_index_key(p_db_set_info->p_set_name, p_db_set_info->set_name_size, p_current_db_record_info->db_record.p_key, p_current_db_record_info->db_record_properties.key_size);
 
-        // If p_key index has been created, insert new index element.
-        if (Index_Api_Index_Key_Exist(p_index_key))
+        size_t index_key_size = get_db_index_key_size(p_db_set_info->set_name_size, p_current_db_record_info->db_record_properties.key_size);
+        char *p_index_key = Mema_Api_Alloc(MEMA_USER_FACILEDB, index_key_size);
+        set_db_index_key(p_index_key, p_db_set_info->p_set_name, p_db_set_info->set_name_size, p_current_db_record_info->db_record.p_key, p_current_db_record_info->db_record_properties.key_size);
+
+        // Insert index if existed. If p_key index has been created, insert new index element.
+        // TODO: add rebuild
+        if ((Index_Api_Index_Key_Exist(p_index_key)) && (p_db_index_checkpoint_sys_data_info = get_db_index_checkpoint_sys_info(&(p_db_set_info->index_checkpoint_list_entry), p_index_key)))
         {
             DB_INDEX_PAYLOAD_T db_index_payload = {
                 .data_tag = data_tag,
                 .start_db_block_tag = first_db_block_tag};
 
-            insert_db_record_index(p_db_set_info, p_current_db_record_info, &db_index_payload);
+            insert_db_record_index(p_index_key, p_db_index_checkpoint_sys_data_info, p_current_db_record_info, &db_index_payload);
+            write_db_record_index_checkpoint_sys_data(p_db_set_info, p_db_index_checkpoint_sys_data_info);
         }
 
         Mema_Api_Free(MEMA_USER_FACILEDB, p_index_key);
     }
 #endif
+
+    update_to_db_set_properties_region(p_db_set_info);
 
     // free db block list
     insert_db_data_handler_free_db_block_list(&db_block_list_entry);
